@@ -1,4694 +1,573 @@
-# Daemon API Reference (TCP JSON-RPC)
+# Life OS API Reference
 
-This document describes **every RPC method implemented by the CodexMonitor daemon** (`src-tauri/src/bin/codex_monitor_daemon.rs`).
+**Snapshot analyzed:** `life-os-codebase-20260202`  
+**This doc covers:**
+- Tauri command surface (all registered `invoke(...)` targets)
+- Codex app-server RPC methods used by the desktop app
+- life-mcp tool surface (tools, high-frequency subset, meta tools)
+- Key React hooks in the Life OS UI
 
-The daemon speaks a lightweight, **newline-delimited JSON** protocol that is *JSON-RPC-inspired*, but **not strict JSON-RPC 2.0** (no `jsonrpc` field).
-
----
-
-## Transport + framing
-
-- **Transport:** TCP
-- **Framing:** **one JSON object per line** (newline-delimited)
-
-### Message shapes
-
-**Request**
-
-```json
-{
-  "id": 1,
-  "method": "list_workspaces",
-  "params": {}
-}
-```
-
-**Response (success)**
-
-```json
-{
-  "id": 1,
-  "result": [
-    {
-      "id": "...",
-      "name": "..."
-    }
-  ]
-}
-```
-
-**Response (error)**
-
-```json
-{
-  "id": 1,
-  "error": {
-    "message": "unauthorized"
-  }
-}
-```
-
-**Notification (server → client)**
-
-```json
-{
-  "method": "app-server-event",
-  "params": {
-    "workspace_id": "...",
-    "message": {
-      "method": "item/agentMessage/delta",
-      "params": {
-        "delta": "hi"
-      }
-    }
-  }
-}
-```
-
-### Error semantics
-
-- Errors are always shaped as:
-  - `{"id": <id>, "error": {"message": "..."}}`
-- There is no standardized error `code` field.
-
+> Naming note: Rust uses `snake_case` identifiers; the JS side often passes `camelCase` keys to `invoke`. Tauri’s argument deserialization handles this mapping in practice, but it’s easy to get tripped up when adding new commands or calling them from scripts.
 
 ---
 
-## Authentication
-
-If the daemon is configured with a token (`--token` or `CODEX_MONITOR_DAEMON_TOKEN`), a client **must** call `auth` first. Until authenticated, all other methods respond with `error.message = "unauthorized"`.
-
-When the token is **not** configured (dev-only `--insecure-no-auth`), clients may omit `auth` entirely. In that mode, `auth` is not implemented and returns `unknown method: auth`.
-
-
----
-
-## RPC methods
-
-Notes on types:
-- Cross-platform data structures are documented in `docs/DATA_MODELS.md`.
-- Some Codex-backed methods return the **raw Codex app-server response envelope** (an object containing its own `id` and `result`). The daemon wraps that envelope inside the daemon response’s `result`.
-
-
----
-
-## Connection
-
-### `auth`
-
-- **Direction:** client → daemon
-- **Auth required:** no
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `token` | `string` | yes | Shared secret token configured on daemon (env CODEX_MONITOR_DAEMON_TOKEN or --token). |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "auth",
-  "params": {
-    "token": "..."
-  }
-}
-```
-```json
-{
-  "id": 1,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Must be the first call on a new TCP connection when the daemon is started with a token.
-
-- If daemon is started without a token (dev-only `--insecure-no-auth`), this method is **not implemented** and will return `unknown method: auth`.
-
-
-
-### `ping`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-_No params._
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "ping"
-}
-```
-```json
-{
-  "id": 1,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Used as a cheap liveness check after auth.
-
-
-
-
----
-
-## Workspaces
-
-### `list_workspaces`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-_No params._
-
-
-**Response**
-
-WorkspaceInfo[] (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "list_workspaces"
-}
-```
-```json
-{
-  "id": 2,
-  "result": [
-    {
-      "id": "...",
-      "name": "MyRepo",
-      "path": "/Users/me/MyRepo",
-      "connected": true,
-      "codex_bin": null,
-      "kind": "main",
-      "parent_id": null,
-      "worktree": null,
-      "settings": {}
-    }
-  ]
-}
-```
-
-**Notes**
-
-- Order: sorted by `workspace.settings.sort_order` then name (see `sort_workspaces`).
-
-- `connected` is computed from whether a Codex session exists in memory.
-
-
-
-### `is_workspace_path_dir`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `path` | `string` | yes | Absolute path to validate. |
-
-
-**Response**
-
-boolean
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "is_workspace_path_dir",
-  "params": {
-    "path": "..."
-  }
-}
-```
-```json
-{
-  "id": 3,
-  "result": true
-}
-```
-
-**Notes**
-
-- Returns true if the path exists and is a directory on the daemon host.
-
-
-
-### `add_workspace`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `path` | `string` | yes | Absolute path to an existing folder on the daemon host. |
-| `codex_bin` | `string|null` | no | Optional per-workspace codex binary override. |
-
-
-**Response**
-
-WorkspaceInfo
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "add_workspace",
-  "params": {
-    "path": "..."
-  }
-}
-```
-```json
-{
-  "id": 4,
-  "result": {
-    "id": "...",
-    "name": "MyRepo",
-    "path": "/Users/me/MyRepo",
-    "connected": true,
-    "codex_bin": null,
-    "kind": "main",
-    "parent_id": null,
-    "worktree": null,
-    "settings": {}
-  }
-}
-```
-
-**Notes**
-
-- Immediately spawns a `codex app-server` session for the workspace; `connected` is returned as `true`.
-
-- Persists to `<data-dir>/workspaces.json`.
-
-- Fails if `path` is not a directory.
-
-
-
-### `add_clone`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `sourceWorkspaceId` | `string` | yes | Workspace id to clone from. |
-| `copiesFolder` | `string` | yes | Absolute folder under which clones will be created. |
-| `copyName` | `string` | yes | Name of the new clone directory (will be sanitized). |
-
-
-**Response**
-
-WorkspaceInfo (new clone workspace)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "add_clone",
-  "params": {
-    "sourceWorkspaceId": "...",
-    "copiesFolder": "...",
-    "copyName": "..."
-  }
-}
-```
-```json
-{
-  "id": 5,
-  "result": {
-    "id": "...",
-    "name": "MyRepo (clone)",
-    "path": "/Users/me/CodexCopies/MyRepo-clone",
-    "connected": true,
-    "codex_bin": null,
-    "kind": "clone",
-    "parent_id": "<source>",
-    "worktree": null,
-    "settings": {}
-  }
-}
-```
-
-**Notes**
-
-- Runs `git clone` under the hood (see daemon implementation).
-
-- Spawns a Codex session for the clone immediately.
-
-- Persists to `workspaces.json`.
-
-
-
-### `add_worktree`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `parentId` | `string` | yes | Workspace id to create a worktree from. |
-| `branch` | `string` | yes | Branch name for the new worktree. |
-
-
-**Response**
-
-WorkspaceInfo (new worktree workspace)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "add_worktree",
-  "params": {
-    "parentId": "...",
-    "branch": "..."
-  }
-}
-```
-```json
-{
-  "id": 6,
-  "result": {
-    "id": "...",
-    "name": "MyRepo (feature-x)",
-    "path": "/Users/me/Library/Application Support/.../worktrees/<id>",
-    "connected": true,
-    "codex_bin": null,
-    "kind": "worktree",
-    "parent_id": "<parent>",
-    "worktree": {
-      "branch": "feature-x",
-      "upstream": "origin/feature-x"
-    },
-    "settings": {}
-  }
-}
-```
-
-**Notes**
-
-- Creates a git worktree directory under the daemon data dir (see `worktree_root_dir`).
-
-- Also supports legacy `.codex-worktrees` behavior for older setups (desktop backend).
-
-- Spawns a Codex session for the worktree immediately.
-
-
-
-### `connect_workspace`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `id` | `string` | yes | Workspace id to connect/spawn session for. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "connect_workspace",
-  "params": {
-    "id": "..."
-  }
-}
-```
-```json
-{
-  "id": 7,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Spawns (or re-spawns) the workspace's `codex app-server` session in memory.
-
-- Most Codex-backed methods require the workspace to be connected, otherwise you get `workspace not connected`.
-
-
-
-### `remove_workspace`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `id` | `string` | yes | Workspace id to remove. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "remove_workspace",
-  "params": {
-    "id": "..."
-  }
-}
-```
-```json
-{
-  "id": 8,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Stops the workspace session if running, removes it from `workspaces.json`.
-
-- For worktrees/clones, also deletes their on-disk directories (see daemon).
-
-
-
-### `remove_worktree`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `id` | `string` | yes | Worktree workspace id to remove. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "remove_worktree",
-  "params": {
-    "id": "..."
-  }
-}
-```
-```json
-{
-  "id": 9,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Only valid for `WorkspaceKind::Worktree` entries.
-
-- Kills the session then removes the worktree directory and entry.
-
-
-
-### `rename_worktree`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `id` | `string` | yes | Worktree workspace id. |
-| `branch` | `string` | yes | New branch name. |
-
-
-**Response**
-
-WorkspaceInfo (updated)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "rename_worktree",
-  "params": {
-    "id": "...",
-    "branch": "..."
-  }
-}
-```
-```json
-{
-  "id": 10,
-  "result": {
-    "id": "...",
-    "name": "MyRepo (new-branch)",
-    "path": "...",
-    "connected": true,
-    "kind": "worktree",
-    "parent_id": "...",
-    "worktree": {
-      "branch": "new-branch",
-      "upstream": null
-    },
-    "settings": {}
-  }
-}
-```
-
-**Notes**
-
-- Renames the worktree branch metadata and updates `workspaces.json`.
-
-
-
-### `rename_worktree_upstream`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `id` | `string` | yes | Worktree workspace id. |
-| `oldBranch` | `string` | yes | Old upstream branch name. |
-| `newBranch` | `string` | yes | New upstream branch name. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "rename_worktree_upstream",
-  "params": {
-    "id": "...",
-    "oldBranch": "...",
-    "newBranch": "..."
-  }
-}
-```
-```json
-{
-  "id": 11,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Used to keep upstream metadata consistent when upstream branch name changes.
-
-
-
-### `apply_worktree_changes`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Worktree workspace id to apply changes into upstream/base (implementation-specific). |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "apply_worktree_changes",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 12,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Implementation applies worktree changes; see daemon code for exact git operations.
-
-
-
-### `open_workspace_in`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `app` | `string` | yes | Target application identifier (e.g. 'finder', 'terminal', etc). |
-
-
-**Response**
-
-ERROR (not supported in daemon mode)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "open_workspace_in",
-  "params": {
-    "workspaceId": "...",
-    "app": "..."
-  }
-}
-```
-```json
-{
-  "id": 13,
-  "error": {
-    "message": "open_workspace_in is not supported in daemon mode."
-  }
-}
-```
-
-**Notes**
-
-- This command exists in the desktop backend (local mode) but is intentionally disabled in the daemon.
-
-
-
-### `update_workspace_settings`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `id` | `string` | yes | Workspace id. |
-| `settings` | `WorkspaceSettings` | yes | Workspace settings blob (see DATA_MODELS.md). |
-
-
-**Response**
-
-WorkspaceInfo (updated)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "update_workspace_settings",
-  "params": {
-    "id": "...",
-    "settings": {}
-  }
-}
-```
-```json
-{
-  "id": 14,
-  "result": {
-    "id": "...",
-    "name": "...",
-    "path": "...",
-    "connected": true,
-    "kind": "main",
-    "parent_id": null,
-    "worktree": null,
-    "settings": {
-      "sort_order": 1
-    }
-  }
-}
-```
-
-**Notes**
-
-- Rewrites the persisted workspace entry in `workspaces.json`.
-
-
-
-### `update_workspace_codex_bin`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `id` | `string` | yes | Workspace id. |
-| `codex_bin` | `string|null` | no | Per-workspace Codex binary override, or null to clear. |
-
-
-**Response**
-
-WorkspaceInfo (updated)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "update_workspace_codex_bin",
-  "params": {
-    "id": "..."
-  }
-}
-```
-```json
-{
-  "id": 15,
-  "result": {
-    "id": "...",
-    "codex_bin": "/usr/local/bin/codex",
-    "connected": true
-  }
-}
-```
-
-**Notes**
-
-- Does not automatically restart a running workspace session; clients may call `connect_workspace` to respawn.
-
-
+## Tauri Commands (invoke targets)
+
+Source of truth: `CodexMonitor-lifeos/src-tauri/src/lib.rs` → `tauri::generate_handler![...]`.
+
+### Event channels (important)
+- `life_stream_event` — emitted by Life Stream backend and consumed by `useLifeStream`
+- `app_server_event` — emitted for Codex app-server streaming events
+- `open_file` — emitted for file-open actions
+
+### Command tables by module
+
+### `life_stream` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `life_stream_load_day` | workspace_id: String, date_iso: String | `Result<Vec<StreamCard>, String>` | `life_stream/mod.rs` |
+| `life_stream_submit` | workspace_id: String, card_id: String, input: String, occurred_at_iso: Option<String>, model: Option<String>, effort: Option<String>, access_mode: Option<String>, collaboration_mode: Option<Value> | `Result<(), String>` | `life_stream/mod.rs` |
+| `life_stream_cancel` | workspace_id: String, card_id: String | `Result<(), String>` | `life_stream/mod.rs` |
+| `life_stream_retry` | workspace_id: String, card_id: String | `Result<(), String>` | `life_stream/mod.rs` |
+| `life_stream_clarify` | workspace_id: String, card_id: String, option_id: String | `Result<(), String>` | `life_stream/mod.rs` |
+| `life_stream_read_log` | workspace_id: String, limit: Option<u32> | `Result<Vec<String>, String>` | `life_stream/mod.rs` |
+
+### `life` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `get_life_workspace_prompt` | — | `Result<String, String>` | `life.rs` |
+| `get_delivery_dashboard` | workspace_id: String, range: String | `Result<DeliveryDashboard, String>` | `life.rs` |
+| `get_nutrition_dashboard` | workspace_id: String, range: String | `Result<NutritionDashboard, String>` | `life.rs` |
+| `get_exercise_dashboard` | workspace_id: String, range: String | `Result<ExerciseDashboard, String>` | `life.rs` |
+| `get_media_dashboard` | workspace_id: String | `Result<MediaLibrary, String>` | `life.rs` |
+| `get_youtube_dashboard` | workspace_id: String | `Result<YouTubeLibrary, String>` | `life.rs` |
+| `enrich_media_covers` | workspace_id: String, force: Option<bool> | `Result<MediaCoverSummary, String>` | `life.rs` |
+| `get_finance_dashboard` | workspace_id: String, range: String | `Result<FinanceDashboard, String>` | `life.rs` |
+
+### `codex` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `codex_doctor` | codex_bin: Option<String> | `Result<Value, String>` | `codex.rs` |
+| `start_thread` | workspace_id: String | `Result<Value, String>` | `codex.rs` |
+| `send_user_message` | workspace_id: String, thread_id: String, text: String, model: Option<String>, effort: Option<String>, access_mode: Option<String>, images: Option<Vec<String>>, collaboration_mode: Option<Value> | `Result<Value, String>` | `codex.rs` |
+| `turn_interrupt` | workspace_id: String, thread_id: String, turn_id: String | `Result<Value, String>` | `codex.rs` |
+| `start_review` | workspace_id: String, thread_id: String, target: Value, delivery: Option<String> | `Result<Value, String>` | `codex.rs` |
+| `respond_to_server_request` | workspace_id: String, request_id: Value, result: Value | `Result<(), String>` | `codex.rs` |
+| `remember_approval_rule` | workspace_id: String, command: Vec<String> | `Result<Value, String>` | `codex.rs` |
+| `get_commit_message_prompt` | workspace_id: String | `Result<String, String>` | `codex.rs` |
+| `generate_commit_message` | workspace_id: String | `Result<String, String>` | `codex.rs` |
+| `resume_thread` | workspace_id: String, thread_id: String | `Result<Value, String>` | `codex.rs` |
+| `list_threads` | workspace_id: String, cursor: Option<String>, limit: Option<u32> | `Result<Value, String>` | `codex.rs` |
+| `list_session_threads` | workspace_path: String, limit: Option<usize> | `Result<Value, String>` | `codex.rs` |
+| `archive_thread` | workspace_id: String, thread_id: String | `Result<Value, String>` | `codex.rs` |
+| `collaboration_mode_list` | workspace_id: String | `Result<Value, String>` | `codex.rs` |
+| `model_list` | workspace_id: String | `Result<Value, String>` | `codex.rs` |
+| `account_rate_limits` | workspace_id: String | `Result<Value, String>` | `codex.rs` |
+| `skills_list` | workspace_id: String | `Result<Value, String>` | `codex.rs` |
+
+### `workspaces` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `list_workspaces` | — | `Result<Vec<WorkspaceInfo>, String>` | `workspaces.rs` |
+| `is_workspace_path_dir` | path: String | `Result<bool, String>` | `workspaces.rs` |
+| `add_workspace` | path: String, codex_bin: Option<String> | `Result<WorkspaceInfo, String>` | `workspaces.rs` |
+| `add_clone` | source_workspace_id: String, copy_name: String, copies_folder: String | `Result<WorkspaceInfo, String>` | `workspaces.rs` |
+| `add_worktree` | parent_id: String, branch: String | `Result<WorkspaceInfo, String>` | `workspaces.rs` |
+| `remove_workspace` | id: String | `Result<(), String>` | `workspaces.rs` |
+| `remove_worktree` | id: String | `Result<(), String>` | `workspaces.rs` |
+| `rename_worktree` | id: String, branch: String | `Result<WorkspaceInfo, String>` | `workspaces.rs` |
+| `rename_worktree_upstream` | id: String, old_branch: String, new_branch: String | `Result<(), String>` | `workspaces.rs` |
+| `apply_worktree_changes` | workspace_id: String | `Result<(), String>` | `workspaces.rs` |
+| `update_workspace_settings` | id: String, settings: WorkspaceSettings | `Result<WorkspaceInfo, String>` | `workspaces.rs` |
+| `update_workspace_codex_bin` | id: String, codex_bin: Option<String> | `Result<WorkspaceInfo, String>` | `workspaces.rs` |
+| `connect_workspace` | id: String | `Result<(), String>` | `workspaces.rs` |
+| `list_workspace_files` | workspace_id: String | `Result<Vec<String>, String>` | `workspaces.rs` |
+| `read_workspace_file` | workspace_id: String, path: String | `Result<WorkspaceFileResponse, String>` | `workspaces.rs` |
+| `open_workspace_in` | path: String, app: String | `Result<(), String>` | `workspaces.rs` |
+
+### `terminal` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `terminal_open` | workspace_id: String, terminal_id: String, cols: u16, rows: u16 | `Result<TerminalSessionInfo, String>` | `terminal.rs` |
+| `terminal_write` | workspace_id: String, terminal_id: String, data: String | `Result<(), String>` | `terminal.rs` |
+| `terminal_resize` | workspace_id: String, terminal_id: String, cols: u16, rows: u16 | `Result<(), String>` | `terminal.rs` |
+| `terminal_close` | workspace_id: String, terminal_id: String | `Result<(), String>` | `terminal.rs` |
+
+### `settings` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `get_app_settings` | — | `Result<AppSettings, String>` | `settings.rs` |
+| `update_app_settings` | settings: AppSettings | `Result<AppSettings, String>` | `settings.rs` |
+
+### `domains` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `domains_list` | — | `Result<Vec<Domain>, String>` | `domains.rs` |
+| `domains_create` | mut domain: Domain | `Result<Domain, String>` | `domains.rs` |
+| `domains_update` | domain: Domain | `Result<Domain, String>` | `domains.rs` |
+| `domains_delete` | domain_id: String | `Result<(), String>` | `domains.rs` |
+| `domain_trends` | workspace_id: String, domain_id: String, range: String | `Result<DomainTrendSnapshot, String>` | `domains.rs` |
+| `read_text_file` | path: String | `Result<String, String>` | `domains.rs` |
+
+### `git` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `get_git_status` | workspace_id: String | `Result<serde_json::Value, String>` | `git.rs` |
+| `list_git_roots` | workspace_id: String, depth: Option<usize> | `Result<Vec<String>, String>` | `git.rs` |
+| `get_git_diffs` | workspace_id: String | `Result<Vec<GitFileDiff>, String>` | `git.rs` |
+| `get_git_log` | workspace_id: String, limit: Option<usize> | `Result<GitLogResponse, String>` | `git.rs` |
+| `get_git_commit_diff` | workspace_id: String, sha: String | `Result<Vec<GitCommitDiff>, String>` | `git.rs` |
+| `get_git_remote` | workspace_id: String | `Result<Option<String>, String>` | `git.rs` |
+| `stage_git_file` | workspace_id: String, path: String | `Result<(), String>` | `git.rs` |
+| `stage_git_all` | workspace_id: String | `Result<(), String>` | `git.rs` |
+| `unstage_git_file` | workspace_id: String, path: String | `Result<(), String>` | `git.rs` |
+| `revert_git_file` | workspace_id: String, path: String | `Result<(), String>` | `git.rs` |
+| `revert_git_all` | workspace_id: String | `Result<(), String>` | `git.rs` |
+| `commit_git` | workspace_id: String, message: String | `Result<(), String>` | `git.rs` |
+| `push_git` | workspace_id: String | `Result<(), String>` | `git.rs` |
+| `pull_git` | workspace_id: String | `Result<(), String>` | `git.rs` |
+| `sync_git` | workspace_id: String | `Result<(), String>` | `git.rs` |
+| `get_github_issues` | workspace_id: String | `Result<GitHubIssuesResponse, String>` | `git.rs` |
+| `get_github_pull_requests` | workspace_id: String | `Result<GitHubPullRequestsResponse, String>` | `git.rs` |
+| `get_github_pull_request_diff` | workspace_id: String, pr_number: u64 | `Result<Vec<GitHubPullRequestDiff>, String>` | `git.rs` |
+| `get_github_pull_request_comments` | workspace_id: String, pr_number: u64 | `Result<Vec<GitHubPullRequestComment>, String>` | `git.rs` |
+| `list_git_branches` | workspace_id: String | `Result<serde_json::Value, String>` | `git.rs` |
+| `checkout_git_branch` | workspace_id: String, name: String | `Result<(), String>` | `git.rs` |
+| `create_git_branch` | workspace_id: String, name: String | `Result<(), String>` | `git.rs` |
+
+### `menu` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `menu_set_accelerators` | updates: Vec<MenuAcceleratorUpdate> | `Result<(), String>` | `menu.rs` |
+
+### `dictation` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `dictation_model_status` | — | `Result<DictationModelStatus, String>` | `dictation.rs` |
+| `dictation_download_model` | — | `Result<DictationModelStatus, String>` | `dictation.rs` |
+| `dictation_cancel_download` | — | `Result<DictationModelStatus, String>` | `dictation.rs` |
+| `dictation_remove_model` | — | `Result<DictationModelStatus, String>` | `dictation.rs` |
+| `dictation_start` | preferred_language: Option<String> | `Result<DictationSessionState, String>` | `dictation.rs` |
+| `dictation_stop` | — | `Result<DictationSessionState, String>` | `dictation.rs` |
+| `dictation_cancel` | — | `Result<DictationSessionState, String>` | `dictation.rs` |
+
+### `local_usage` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `local_usage_snapshot` | days: Option<u32>, workspace_path: Option<String> | `Result<LocalUsageSnapshot, String>` | `local_usage.rs` |
+
+### `files` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `read_global_agents_md` | — | `Result<TextFileResponse, String>` | `files.rs` |
+| `write_global_agents_md` | content: String | `Result<(), String>` | `files.rs` |
+| `read_global_config_toml` | — | `Result<TextFileResponse, String>` | `files.rs` |
+| `write_global_config_toml` | content: String | `Result<(), String>` | `files.rs` |
+
+### `memory_commands` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `memory_status` | — | `Result<MemoryStatus, String>` | `memory_commands.rs` |
+| `memory_search` | query: String, limit: Option<usize> | `Result<Vec<MemorySearchResult>, String>` | `memory_commands.rs` |
+| `memory_append` | memory_type: String, content: String, tags: Vec<String>, workspace_id: Option<String> | `Result<MemoryEntry, String>` | `memory_commands.rs` |
+| `memory_bootstrap` | — | `Result<Vec<MemorySearchResult>, String>` | `memory_commands.rs` |
+| `memory_flush_now` | workspace_id: String, thread_id: String, force: Option<bool> | `Result<serde_json::Value, String>` | `memory_commands.rs` |
+
+### `prompts` module
+
+| Command (invoke target) | JS args (excluding injected State/AppHandle) | Rust return type | Source |
+| --- | --- | --- | --- |
+| `prompts_list` | — | `Result<Vec<CustomPromptEntry>, String>` | `prompts.rs` |
+| `prompts_create` | — | `Result<CustomPromptEntry, String>` | `prompts.rs` |
+| `prompts_update` | — | `Result<CustomPromptEntry, String>` | `prompts.rs` |
+| `prompts_delete` | — | `Result<(), String>` | `prompts.rs` |
+| `prompts_move` | — | `Result<CustomPromptEntry, String>` | `prompts.rs` |
+| `prompts_workspace_dir` | — | `Result<String, String>` | `prompts.rs` |
+| `prompts_global_dir` | — | `Result<String, String>` | `prompts.rs` |
 
 
 ---
 
-## Workspace files
+## Codex app-server RPC methods
 
-### `list_workspace_files`
+These are the JSON-RPC methods the Rust backend calls via `WorkspaceSession.send_request(...)` and `send_notification(...)`.
 
-- **Direction:** client → daemon
-- **Auth required:** yes
+### Requests (client → app-server)
 
+- `account/rateLimits/read`
+- `collaborationMode/list`
+- `initialize`
+- `model/list`
+- `review/start`
+- `skills/config/write`
+- `skills/list`
+- `thread/archive`
+- `thread/list`
+- `thread/resume`
+- `thread/start`
+- `turn/interrupt`
+- `turn/start`
 
-**Request params**
+### Notifications (client → app-server)
 
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
+- `initialized`
 
+### App-server → client events you must handle
 
-**Response**
+The app-server streams updates as event-like messages (not requests). The code explicitly expects at least:
+- `item/agentMessage/delta` (token streaming)
+- `turn/completed`
+- `turn/error`
 
-string[] (relative file paths under workspace root)
+(There are more event methods in practice; these are the ones the current Rust streaming loop branches on.)
 
+---
 
-**Example**
+## life-mcp MCP tool surface
 
-```json
-{
-  "id": 1,
-  "method": "list_workspace_files",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 16,
-  "result": [
-    "README.md",
-    "src/main.tsx",
-    "src-tauri/src/lib.rs"
-  ]
-}
-```
+### What actually gets registered in MCP stdio mode
 
-**Notes**
+In `life-mcp/src/server/mcp.js`, the MCP server registers:
+1) **Meta tools** (always): `list_tools`, `search_tools`, `get_tool_schema`, `execute_tool`  
+2) **High-frequency tools** (subset): tools returned by `getHighFrequencyTools()`
 
-- Respects ignore rules via the `ignore` crate; skips heavy dirs like `.git` and `node_modules`.
+So a plain MCP client calling `tools/list` will only see **meta + high-frequency** tools.
 
-- Has an internal max-file safety limit (see code).
+> If you need to call *non-registered* tools over MCP, you can route through the meta tool `execute_tool` (it can execute any tool in the registry by name).  
+> The Rust Life Stream bridge does **not** use `execute_tool` — it calls tools directly by name and therefore must whitelist tools that are *actually registered*.
 
+### High-frequency tools (Node registry)
 
+From `life-mcp/src/tool-registry.js` (`HIGH_FREQUENCY_TOOL_NAMES`):
 
-### `read_workspace_file`
+- `advise_order`
+- `log_meal_quick`
+- `add_delivery`
+- `delivery_bulk_add`
+- `start_session_manual`
+- `get_session_context`
+- `set_current_ar`
+- `agent_status`
+- `log_activity`
+- `log_reward`
+- `reward_status`
+- `reward_rules`
+- `note_add`
+- `note_list`
+- `note_search`
+- `note_explore`
+- `note_delete`
+- `note_links`
+- `knowledge_browse`
+- `knowledge_search`
+- `knowledge_status`
 
-- **Direction:** client → daemon
-- **Auth required:** yes
+---
 
+## life-mcp Tools Reference (by module)
 
-**Request params**
+**Parsed from:** `life-mcp/src/tools/*.js`  
+**Total tools found in this snapshot:** **147**
 
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `path` | `string` | yes | Relative path within the workspace. |
+HF legend: ⭐ = in `HIGH_FREQUENCY_TOOL_NAMES`
 
+### Meta / Registry Tools (4)
 
-**Response**
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `describe_tool` | `describe_tool(name)` |  | name | — | Get parameter details for a specific tool. |
+| `execute_tool` | `execute_tool(name, params?)` |  | name | params | Execute a tool by name with parameters (use after describe_tool). |
+| `list_categories` | `list_categories()` |  | — | — | List all available tool categories and their purposes. |
+| `search_tools` | `search_tools(query?, category?)` |  | — | query, category | Search for tools by keyword or category. Use this first to discover tools. |
 
-{ content: string, truncated: boolean }
+### Delivery Session Tools (11)
 
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `add_delivery` | `add_delivery(app, merchant, status, session_id?, timestamp_offered?, merchant_tier?, zone_pickup?, zone_dropoff?, quoted_pay?, final_pay?, listed_miles?, real_miles?, deadhead_miles?, order_type?, stack_size?, stack_id?, decision_type?, decision_reasoning?, ar_at_decision?, whale_window_active?, promo_active?, wait_time_mins?, total_time_mins?, position_after?, chained_well?, what_came_next?, notes?)` | ⭐ | app, merchant, status | session_id, timestamp_offered, merchant_tier, zone_pickup, zone_dropoff, quoted_pay, final_pay, listed_miles, real_miles, deadhead_miles, order_type, stack_size, stack_id, decision_type, decision_reasoning, ar_at_decision, whale_window_active, promo_active, wait_time_mins, total_time_mins, position_after, chained_well, what_came_next, notes | Log a delivery to the current session |
+| `delivery_bulk_add` | `delivery_bulk_add(session_id?, deliveries?)` | ⭐ | — | session_id, deliveries | Bulk log deliveries to a session (preserves input order) |
+| `end_session` | `end_session(session_id?, actual?, ending_ar?, whale_catches?, strategic_notes?)` |  | — | session_id, actual, ending_ar, whale_catches, strategic_notes | Close the current session with final stats |
+| `generate_session_report` | `generate_session_report(session_id?)` |  | — | session_id | Generate comprehensive end-of-session report with order breakdown, merchant analysis, zone analysis, and performance metrics |
+| `get_day_analysis` | `get_day_analysis(day_of_week, shift?, app?, zone?, date_from?, date_to?, limit?)` |  | day_of_week | shift, app, zone, date_from, date_to, limit | Get aggregated historical patterns for a day/shift combination. Uses fallback logic if not enough matching sessions. |
+| `get_deliveries` | `get_deliveries(session_id?, date?, app?, status?, merchant?)` |  | — | session_id, date, app, status, merchant | Query deliveries with optional filters (returns raw data - prefer get_day_analysis for summaries) |
+| `get_recommendations` | `get_recommendations(day_of_week, shift, starting_ar?)` |  | day_of_week, shift | starting_ar | Get predictions and strategy tips for an upcoming session based on historical data |
+| `get_session` | `get_session(session_id?)` |  | — | session_id | Get a session with all its deliveries |
+| `get_session_stats` | `get_session_stats(session_id?)` |  | — | session_id | Get aggregated statistics for a single session (compact summary instead of raw deliveries) |
+| `start_session` | `start_session(day_type?, promo_windows?, starting_ar?, target?, strategic_notes?)` |  | — | day_type, promo_windows, starting_ar, target, strategic_notes | Begin a new delivery shift, creates session record and returns session_id |
+| `start_session_manual` | `start_session_manual(date, shift_start, force?, session_id?, shift_end?, day_type?, promo_windows?, starting_ar?, ending_ar?, target?, actual?, whale_catches?, strategic_notes?)` | ⭐ | date, shift_start | force, session_id, shift_end, day_type, promo_windows, starting_ar, ending_ar, target, actual, whale_catches, strategic_notes | Create a delivery session with explicit date/time (for backfilling). |
 
-**Example**
+### Delivery Advisor Tools (11)
 
-```json
-{
-  "id": 1,
-  "method": "read_workspace_file",
-  "params": {
-    "workspaceId": "...",
-    "path": "..."
-  }
-}
-```
-```json
-{
-  "id": 17,
-  "result": {
-    "content": "# README\\n...",
-    "truncated": false
-  }
-}
-```
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `advise_order` | `advise_order(stt_text?, app?, merchant?, pay?, miles?, destination?, ar?, whale_window_active?, catering?, promo_active?, end_of_shift?, session_id?, format?)` | ⭐ | — | stt_text, app, merchant, pay, miles, destination, ar, whale_window_active, catering, promo_active, end_of_shift, session_id, format | Evaluate a delivery order in real-time. Uses thresholds from life-os/systems/delivery.yaml (AR zones, $/mile, whale thresholds). Supports messy STT input. Returns verdict with reasoning breakdown. |
+| `get_all_merchants` | `get_all_merchants()` |  | — | — | List all known merchants with their tiers (for debugging) |
+| `get_intersection_distances` | `get_intersection_distances(hub?, include_custom?)` |  | — | hub, include_custom | Get all known intersection distances (built-in + custom) |
+| `get_merchant` | `get_merchant(merchant_name)` |  | merchant_name | — | Get merchant tier, wait time estimate, and watchlist status |
+| `get_ruleset` | `get_ruleset()` |  | — | — | Get the current decision engine rules and thresholds. Shows config from life-os/systems/delivery.yaml (AR zones, $/mile thresholds, whale windows, merchant tiers). Useful for debugging or explaining decisions. |
+| `get_session_context` | `get_session_context(session_id?)` | ⭐ | — | session_id | Get current AR, whale mode, promo status, and running totals for active session |
+| `set_current_ar` | `set_current_ar(ar, session_id?)` | ⭐ | ar | session_id | Update your current acceptance rate during a session |
+| `set_end_of_shift` | `set_end_of_shift(enabled, session_id?)` |  | enabled | session_id | Toggle end of shift mode (applies return-ticket logic) |
+| `set_intersection_distance` | `set_intersection_distance(intersection, miles, minutes, zone?, pch_miles?, pch_minutes?)` |  | intersection, miles, minutes | zone, pch_miles, pch_minutes | Add or update an intersection distance for deadhead calculations (runtime addition) |
+| `set_promo_active` | `set_promo_active(active, session_id?)` |  | active | session_id | Set whether +$2 DoorDash promo is currently active |
+| `set_whale_mode` | `set_whale_mode(enabled, session_id?)` |  | enabled | session_id | Toggle whale hunting mode (prioritize staying in RV for big orders) |
 
-**Notes**
+### Nutrition Tools (11)
 
-- The daemon enforces that the resolved path stays within the workspace root.
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `analyze_nutrition_delivery` | `analyze_nutrition_delivery(date_from?, date_to?, include_workouts?, nutrition_filter?, workout_filter?)` |  | — | date_from, date_to, include_workouts, nutrition_filter, workout_filter | Correlate nutrition/workout data with delivery earnings. Answer questions like "do I earn more on high protein days?" |
+| `food_lookup` | `food_lookup(query, quantity?)` |  | query | quantity | Look up nutrition info for a food from the embedded database |
+| `gap_analysis` | `gap_analysis(days?)` |  | — | days | Find nutritional gaps - nutrients below target levels |
+| `get_daily_summary` | `get_daily_summary(date?)` |  | — | date | Get nutrition totals for a specific day. Use for "what were my macros on [day]?" questions. |
+| `get_meals` | `get_meals(date?, date_from?, date_to?, meal_type?)` |  | — | date, date_from, date_to, meal_type | Get raw meal data for a specific date or range. Use this when user asks "what did I eat on [day]?" |
+| `get_weekly_trends` | `get_weekly_trends(start_date?)` |  | — | start_date | Get 7-day nutrition overview. Use for general "how is my nutrition?" questions to avoid context overflow. |
+| `log_meal` | `log_meal(meal_type, description, date?, time?, meal_key?, source?, restaurant?, calories?, protein?, carbs?, fat?, fiber?, sodium?, vitamin_a?, vitamin_c?, vitamin_d?, vitamin_e?, vitamin_k?, b12?, calcium?, iron?, magnesium?, zinc?, potassium?, omega3?, notes?)` |  | meal_type, description | date, time, meal_key, source, restaurant, calories, protein, carbs, fat, fiber, sodium, vitamin_a, vitamin_c, vitamin_d, vitamin_e, vitamin_k, b12, calcium, iron, magnesium, zinc, potassium, omega3, notes | Log a meal with nutrition data |
+| `log_meal_quick` | `log_meal_quick(input, meal_type?)` | ⭐ | input | meal_type | Log a meal using natural language with auto-lookup. Perfect for voice input: "had my smoothie and 3 eggs for breakfast" |
+| `log_supplement` | `log_supplement(supplement, amount, date?, notes?)` |  | supplement, amount | date, notes | Log supplement intake |
+| `log_workout` | `log_workout(type, description, duration_mins, date?, time?, notes?)` |  | type, description, duration_mins | date, time, notes | Log a workout |
+| `nutrient_check` | `nutrient_check(nutrient, days?)` |  | nutrient | days | Check a specific nutrient over time against targets |
 
-- Large files are truncated (see `MAX_FILE_BYTES` in daemon).
+### Finance Tools (11)
 
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `add_bill` | `add_bill(payee, amount, due_day?, type?, autopay?, notes?)` |  | payee, amount | due_day, type, autopay, notes | Add a new bill (recurring or one-time) |
+| `delete_bill` | `delete_bill(payee)` |  | payee | — | Delete a bill (use for one-time bills after paying) |
+| `get_bills` | `get_bills()` |  | — | — | Get list of all recurring bills |
+| `get_bills_due` | `get_bills_due(days?)` |  | — | days | See upcoming bills due in the next N days |
+| `get_delivery_income` | `get_delivery_income(month?)` |  | — | month | Get delivery income for a month (pulled from delivery sessions) |
+| `get_monthly_summary` | `get_monthly_summary(month?)` |  | — | month | Get financial summary for a month - income (including delivery), expenses, bills, net cash flow |
+| `get_spending_by_category` | `get_spending_by_category(month?)` |  | — | month | See spending breakdown by category for a month |
+| `log_expense` | `log_expense(amount, category, payee, date?, payment_method?, notes?)` |  | amount, category, payee | date, payment_method, notes | Log a purchase or expense |
+| `log_income` | `log_income(amount, source, date?, notes?)` |  | amount, source | date, notes | Log income (non-delivery income - delivery income is auto-pulled from sessions) |
+| `pay_bill` | `pay_bill(payee, amount?, date?)` |  | payee | amount, date | Record a bill payment. Uses fuzzy matching - "discover" matches "Discover Credit Card" |
+| `update_bill` | `update_bill(payee, min_payment?, autopay?, notes?)` |  | payee | min_payment, autopay, notes | Update a bill's minimum payment, autopay status, or notes |
 
+### YouTube Tools (13)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `yt_add_idea` | `yt_add_idea(title, tier?, thesis?, pillars?, hook_ideas?, evidence?, frame?, themes?, frameworks?, estimated_length?, notes?)` |  | title | tier, thesis, pillars, hook_ideas, evidence, frame, themes, frameworks, estimated_length, notes | Create a new YouTube video idea from a brain dump |
+| `yt_bulk_import` | `yt_bulk_import(ideas?)` |  | — | ideas | Import multiple YouTube video ideas at once |
+| `yt_bulk_update` | `yt_bulk_update(updates?)` |  | — | updates | Update multiple YouTube ideas at once (max 20) |
+| `yt_connect_ideas` | `yt_connect_ideas(id1, id2)` |  | id1, id2 | — | Link two related YouTube video ideas together |
+| `yt_generate_outline` | `yt_generate_outline(id, advance_status?)` |  | id | advance_status | Generate a structured 3-pillar outline from an existing YouTube idea, using thesis/pillars/hooks/evidence |
+| `yt_get_connections` | `yt_get_connections(id)` |  | id | — | Get all ideas connected to a specific YouTube video idea |
+| `yt_get_idea` | `yt_get_idea(id)` |  | id | — | Get full details of a YouTube video idea |
+| `yt_get_pipeline` | `yt_get_pipeline()` |  | — | — | Get overview of YouTube video pipeline - counts by status and in-progress items |
+| `yt_get_script` | `yt_get_script(id)` |  | id | — | Get the script and outline for a YouTube video idea |
+| `yt_list_by_status` | `yt_list_by_status(status, limit?)` |  | status | limit | List YouTube video ideas by status |
+| `yt_save_script` | `yt_save_script(id, script)` |  | id, script | — | Save or update the script for a YouTube video idea |
+| `yt_search_ideas` | `yt_search_ideas(keyword?, tier?, status?, theme?, framework?, limit?)` |  | — | keyword, tier, status, theme, framework, limit | Search YouTube video ideas by keyword, tier, status, theme, or framework |
+| `yt_update_idea` | `yt_update_idea(id, title?, tier?, status?, thesis?, pillars?, hook_ideas?, evidence?, frame?, themes?, frameworks?, estimated_length?, notes?, outline?, research_notes?)` |  | id | title, tier, status, thesis, pillars, hook_ideas, evidence, frame, themes, frameworks, estimated_length, notes, outline, research_notes | Update any field on a YouTube video idea |
+
+### Media Tools (12)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `media_add` | `media_add(title, type, status?, rating?, notes?, creator?, creator_link?, url?, tags?, year?, date_consumed?)` |  | title, type | status, rating, notes, creator, creator_link, url, tags, year, date_consumed | Add a movie, game, TV show, etc. to your library |
+| `media_bulk_update` | `media_bulk_update(updates?)` |  | — | updates | Update multiple media items at once (max 50) |
+| `media_by_creator` | `media_by_creator(creator)` |  | creator | — | Get all media by a specific creator with stats |
+| `media_delete` | `media_delete(id)` |  | id | — | Delete a media item from your library |
+| `media_get` | `media_get(id)` |  | id | — | Get details of a specific media item by ID |
+| `media_get_stats` | `media_get_stats()` |  | — | — | Get statistics about your media library (counts by type, average rating, rating distribution, top tags) |
+| `media_log_watch` | `media_log_watch(id, rating, notes?, date_consumed?)` |  | id, rating | notes, date_consumed | Mark an existing item as Completed and add a rating/review |
+| `media_recent` | `media_recent(n?, type?)` |  | — | n, type | Get recently completed media items |
+| `media_search` | `media_search(keyword?, type?, status?, rating_min?, rating_max?, year?, creator?, tags?, limit?)` |  | — | keyword, type, status, rating_min, rating_max, year, creator, tags, limit | Search your media library by keyword, type, rating, year, or status |
+| `media_timeline` | `media_timeline(year?, month?, type?)` |  | — | year, month, type | Get media completed in a specific time period |
+| `media_top_rated` | `media_top_rated(type?, limit?, min_rating?)` |  | — | type, limit, min_rating | Get your top rated media items |
+| `media_update` | `media_update(id, title?, type?, status?, rating?, notes?, creator?, creator_link?, url?, tags?, year?, date_consumed?)` |  | id | title, type, status, rating, notes, creator, creator_link, url, tags, year, date_consumed | Update an existing media item |
+
+### Creators Tools (5)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `creator_add` | `creator_add(name, type, focus?, notes?, url?)` |  | name, type | focus, notes, url | Add a new creator (director, author, YouTuber, etc.) |
+| `creator_get` | `creator_get(id)` |  | id | — | Get creator details with aggregated media stats |
+| `creator_rankings` | `creator_rankings(type?, min_media_count?, limit?)` |  | — | type, min_media_count, limit | Get top-rated creators by average rating |
+| `creator_search` | `creator_search(keyword?, type?, limit?)` |  | — | keyword, type, limit | Search creators by name or type |
+| `creator_update` | `creator_update(id, name?, type?, focus?, notes?, url?)` |  | id | name, type, focus, notes, url | Update a creator record |
+
+### Tasks Tools (5)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `add_task` | `add_task(title, date?, time?, description?, priority?)` |  | title | date, time, description, priority | Create a new task/todo item for today or a specific date |
+| `delete_task` | `delete_task(id)` |  | id | — | Delete a task permanently |
+| `get_recent` | `get_recent(type?)` |  | — | type | Get recently accessed records (media, ideas, creators) for quick re-use |
+| `get_tasks` | `get_tasks(id?, date?, range_days?, status?, priority?, include_completed?, limit?)` |  | — | id, date, range_days, status, priority, include_completed, limit | Get tasks/todos with optional filters |
+| `update_task` | `update_task(id, status?, title?, time?, description?, priority?)` |  | id | status, title, time, description, priority | Update a task - change status, priority, time, or other fields |
+
+### Analysis Tools (17)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `analyze_ar_impact` | `analyze_ar_impact(days?, focus?)` |  | — | days, focus | Analyze the cost of AR protection - what each AR point costs in potential earnings. |
+| `analyze_decisions` | `analyze_decisions(days?, focus?)` |  | — | days, focus | Analyze decision patterns - whale catches, AR protection plays, and decision quality. |
+| `analyze_hidden_tips` | `analyze_hidden_tips(days?, min_orders?, order_type?)` |  | — | days, min_orders, order_type | Analyze hidden tip patterns - which merchants/apps hide tips most and at what quoted pay levels. |
+| `analyze_merchants` | `analyze_merchants(days?, min_orders?, sort_by?)` |  | — | days, min_orders, sort_by | Analyze merchant performance and compare to tier assignments. Suggests tier updates based on actual data. |
+| `analyze_pay_correlation` | `analyze_pay_correlation(days?, app?, bucket_size?, order_type?)` |  | — | days, app, bucket_size, order_type | Analyze the relationship between quoted pay and final pay to identify hidden tip patterns. |
+| `analyze_session_targets` | `analyze_session_targets(days?, target_type?)` |  | — | days, target_type | Analyze goal/target performance - hit rate, time to target, and earnings velocity. |
+| `analyze_stacks` | `analyze_stacks(days?, min_orders?)` |  | — | days, min_orders | Compare stacked orders vs singles - performance, hidden tips, and which merchants stack well. |
+| `analyze_time_patterns` | `analyze_time_patterns(days?, granularity?, metric?)` |  | — | days, granularity, metric | Analyze performance by hour, day of week, or shift to identify optimal working times. |
+| `analyze_tips` | `analyze_tips(days?, group_by?, app?, order_type?)` |  | — | days, group_by, app, order_type | Analyze tip patterns by zone, merchant, tier, day of week, or hour. Returns aggregated insights instead of raw records. |
+| `analyze_trends` | `analyze_trends(period?, metric?, lookback?)` |  | — | period, metric, lookback | Analyze week-over-week or month-over-month trends in key metrics. |
+| `analyze_wait_times` | `analyze_wait_times(days?, min_orders?, sort_by?)` |  | — | days, min_orders, sort_by | Analyze restaurant wait times - which merchants waste your time and impact on hourly rate. |
+| `analyze_zones` | `analyze_zones(days?, shift?, metric?)` |  | — | days, shift, metric | Analyze zone profitability including deadhead impact, hourly rate, and $/mile by zone. |
+| `suggest_dpm_thresholds` | `suggest_dpm_thresholds(days?, target_hourly?, bucket_size?)` |  | — | days, target_hourly, bucket_size | Find optimal $/mi thresholds that would maximize hourly rate. Analyzes actual outcomes to suggest threshold adjustments. |
+| `suggest_merchant_tiers` | `suggest_merchant_tiers(days?, min_orders?, hourly_threshold?)` |  | — | days, min_orders, hourly_threshold | Compare actual merchant performance to current tier assignments. Suggests upgrades/downgrades based on hourly rate and wait time data. |
+| `suggest_wait_time_updates` | `suggest_wait_time_updates(days?, min_orders?)` |  | — | days, min_orders | Update merchant wait time estimates based on actual recorded wait times. |
+| `suggest_whale_windows` | `suggest_whale_windows(days?)` |  | — | days | Validate and adjust whale window times based on actual whale frequency by hour. |
+| `suggest_zone_rules` | `suggest_zone_rules(days?, min_orders?, hourly_threshold?)` |  | — | days, min_orders, hourly_threshold | Identify zones that should be auto-decline or have adjusted deadhead values based on actual performance. |
+
+### Agents Tools (4)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `agent_details` | `agent_details(run_id)` |  | run_id | — | Get detailed information about a specific agent run, including tool usage stats. |
+| `agent_events` | `agent_events(since?, limit?, run_id?, event_type?)` |  | — | since, limit, run_id, event_type | Get recent agent events (started, progress, completed, failed, stalled). |
+| `agent_refresh` | `agent_refresh()` |  | — | — | Force refresh of agent state from disk. Use after manual file changes. |
+| `agent_status` | `agent_status(status?, limit?)` | ⭐ | — | status, limit | Get current status of agents. Returns running, completed, failed, and stalled agents. |
+
+### Goals Tools (8)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `goal_add` | `goal_add(title, type, status?, priority?, progress?, parent_id?, blocked_by?, domain?, start_date?, end_date?, notes?, icon?)` |  | title, type | status, priority, progress, parent_id, blocked_by, domain, start_date, end_date, notes, icon | Add a new goal, objective, key result, project, or task |
+| `goal_bulk_update` | `goal_bulk_update(updates?)` |  | — | updates | Update multiple goals at once |
+| `goal_children` | `goal_children(parent_id)` |  | parent_id | — | Get all child goals of a parent goal |
+| `goal_delete` | `goal_delete(id)` |  | id | — | Delete a goal |
+| `goal_get` | `goal_get(id)` |  | id | — | Get a goal by ID |
+| `goal_graph` | `goal_graph()` |  | — | — | Get all goals with their relationships for visualization |
+| `goal_list` | `goal_list(type?, status?, priority?, domain?, parent_id?, limit?)` |  | — | type, status, priority, domain, parent_id, limit | List goals with optional filters |
+| `goal_update` | `goal_update(id, title?, type?, status?, priority?, progress?, parent_id?, blocked_by?, domain?, start_date?, end_date?, notes?, icon?)` |  | id | title, type, status, priority, progress, parent_id, blocked_by, domain, start_date, end_date, notes, icon | Update an existing goal |
+
+### Relationships Tools (11)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `contact_add` | `contact_add(name, nickname?, relationship_type?, email?, phone?, birthday?, location?, company?, role?, how_we_met?, notes?, topics?, contact_frequency?, favorite?)` |  | name | nickname, relationship_type, email, phone, birthday, location, company, role, how_we_met, notes, topics, contact_frequency, favorite | Add a new contact to the relationship system. Use for family, friends, professional contacts, etc. |
+| `contact_delete` | `contact_delete(id)` |  | id | — | Delete a contact (prefer archiving instead) |
+| `contact_followups` | `contact_followups()` |  | — | — | Get contacts with overdue follow-ups |
+| `contact_get` | `contact_get(id)` |  | id | — | Get details for a specific contact by ID |
+| `contact_list` | `contact_list(relationship_type?, favorite?, needs_followup?, search?, include_archived?, limit?)` |  | — | relationship_type, favorite, needs_followup, search, include_archived, limit | List contacts with optional filters |
+| `contact_search` | `contact_search(query)` |  | query | — | Search contacts by name |
+| `contact_update` | `contact_update(id, name?, nickname?, relationship_type?, email?, phone?, birthday?, location?, company?, role?, how_we_met?, notes?, topics?, contact_frequency?, next_followup?, favorite?, archived?)` |  | id | name, nickname, relationship_type, email, phone, birthday, location, company, role, how_we_met, notes, topics, contact_frequency, next_followup, favorite, archived | Update an existing contact |
+| `interaction_add` | `interaction_add(contact_id, summary, type?, date?, details?, sentiment?, topics_discussed?, location?, duration_mins?, followup_needed?, followup_date?)` |  | contact_id, summary | type, date, details, sentiment, topics_discussed, location, duration_mins, followup_needed, followup_date | Log an interaction with a contact (call, text, meeting, etc.) |
+| `interaction_history` | `interaction_history(contact_id, limit?)` |  | contact_id | limit | Get interaction history for a contact |
+| `interaction_recent` | `interaction_recent(days?, limit?)` |  | — | days, limit | Get recent interactions across all contacts |
+| `relationship_health` | `relationship_health()` |  | — | — | Get relationship health metrics and identify contacts needing attention |
+
+### Inbox Tools (9)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `inbox_add` | `inbox_add(title, preview?, priority?, domain?, type?)` |  | title | preview, priority, domain, type | Add a manual item to the inbox. Use for capturing quick thoughts, reminders, or items from other sources. |
+| `inbox_archive` | `inbox_archive(id)` |  | id | — | Archive an inbox item without processing. Use for items that are no longer relevant. |
+| `inbox_get` | `inbox_get(id)` |  | id | — | Get a single inbox item by ID with full details. |
+| `inbox_list` | `inbox_list(type?, priority?, domain?, limit?)` |  | — | type, priority, domain, limit | Get active inbox items for triage. Returns pending items ordered by priority. |
+| `inbox_process` | `inbox_process(id, action)` |  | id, action | — | Mark an inbox item as processed with an action. Use after handling the item. |
+| `inbox_snooze` | `inbox_snooze(id, until)` |  | id, until | — | Snooze an inbox item until later. Supports relative times like "1h", "tomorrow", "next week". |
+| `inbox_stats` | `inbox_stats()` |  | — | — | Get inbox statistics - counts by priority, type, and processing stats. |
+| `inbox_sync` | `inbox_sync()` |  | — | — | Sync internal sources (tasks, follow-ups, at-risk goals) into the inbox. Run periodically or on demand. |
+| `inbox_update` | `inbox_update(id, priority?, domain?, title?, preview?)` |  | id | priority, domain, title, preview | Update an inbox item (priority, domain, title, etc.). |
+
+### Notes Tools (6)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `note_add` | `note_add(content, tags?, source?)` | ⭐ | content | tags, source | Add a quick note. Auto-extracts tags from content based on keywords. |
+| `note_delete` | `note_delete(id)` | ⭐ | id | — | Delete a note by ID. |
+| `note_explore` | `note_explore(query, limit?, max_distance?)` | ⭐ | query | limit, max_distance | Semantic search notes by meaning (wraps knowledge_search). |
+| `note_links` | `note_links(id)` | ⭐ | id | — | Show outbound wiki-links and backlinks for a note (requires note_links table). |
+| `note_list` | `note_list(days?, tag?, source?, limit?)` | ⭐ | — | days, tag, source, limit | List recent notes with optional filtering by days, tag, or source. |
+| `note_search` | `note_search(query, tag?, limit?)` | ⭐ | query | tag, limit | Search notes by keyword using full-text search. |
+
+### Knowledge Tools (3)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `knowledge_browse` | `knowledge_browse(topic?)` | ⭐ | — | topic | Browse configured knowledge topics and suggested search settings. |
+| `knowledge_search` | `knowledge_search(query, limit?, max_distance?)` | ⭐ | query | limit, max_distance | Semantic search over your notes (MiniMax embeddings + pgvector). |
+| `knowledge_status` | `knowledge_status()` | ⭐ | — | — | Show embedding pipeline status (counts of ready/pending/error). |
+
+### Rewards Tools (4)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `log_activity` | `log_activity(activity_type, minutes, date?, notes?)` | ⭐ | activity_type, minutes | date, notes | Log a beneficial activity (walk, workout, deep_work) to earn reward credits |
+| `log_reward` | `log_reward(reward_type, minutes?, date?, notes?)` | ⭐ | reward_type | minutes, date, notes | Log reward consumption (music, gaming, media, treat) to spend credits |
+| `reward_rules` | `reward_rules(action?, activity_type?, reward_type?, ratio?, active?)` | ⭐ | — | action, activity_type, reward_type, ratio, active | View or modify reward rules (ratios between activities and rewards) |
+| `reward_status` | `reward_status(date?)` | ⭐ | — | date | Check current reward balance, activities, and streak |
+
+### Digest Tools (2)
+
+| Tool | Signature | HF | Required params | Optional params | Description |
+| --- | --- | --- | --- | --- | --- |
+| `get_daily_digest` | `get_daily_digest(date?)` |  | — | date | Get today's summary across all domains - tasks, nutrition, delivery, bills, rewards |
+| `weekly_report` | `weekly_report(weeks_back?)` |  | — | weeks_back | Get weekly performance summary across all domains |
 
 
 ---
 
-## App settings & diagnostics
+## React API surface (Life OS)
 
-### `get_app_settings`
+### `useLifeStream(...)`
 
-- **Direction:** client → daemon
-- **Auth required:** yes
+**File:** `src/features/life-stream/hooks/useLifeStream.ts`
 
+```ts
+useLifeStream({
+  workspaceId: string | null,
+  obsidianRoot: string | null,
+  userId: string,
+}) => {
+  cards: StreamCard[]
+  isLoading: boolean
+  loadError: string | null
+  currentDate: string              // ISO date (YYYY-MM-DD)
+  setCurrentDate(dateIso: string): void
+  refresh(): Promise<void>
 
-**Request params**
+  submit(input: CardSubmitInput): Promise<void>
+  cancel(cardId: string): Promise<void>
+  retry(cardId: string): Promise<void>
+  clarify(cardId: string, option: string): Promise<void>
 
-_No params._
-
-
-**Response**
-
-AppSettings (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_app_settings"
-}
-```
-```json
-{
-  "id": 18,
-  "result": {
-    "codexBin": null,
-    "backendMode": "local",
-    "remoteBackendHost": "127.0.0.1:4732",
-    "remoteBackendToken": null,
-    "defaultAccessMode": "current",
-    "uiScale": 1.0,
-    "theme": "system"
-  }
+  expandedCardId: string | null
+  setExpandedCardId(id: string | null): void
+  emojiFilters: string[]
+  toggleEmojiFilter(emoji: string): void
 }
 ```
 
-**Notes**
+### `LifeStreamContext`
 
-- Before returning, the daemon overlays experimental feature flags from `$CODEX_HOME/config.toml` (collab/steer/unified_exec).
+**File:** `src/features/life-stream/context/LifeStreamContext.tsx`
 
-
-
-### `update_app_settings`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `settings` | `AppSettings` | yes | Full settings blob to persist. |
-
-
-**Response**
-
-AppSettings (echoed)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "update_app_settings",
-  "params": {
-    "settings": {}
-  }
-}
-```
-```json
-{
-  "id": 19,
-  "result": {
-    "codexBin": "/usr/local/bin/codex",
-    "backendMode": "remote",
-    "remoteBackendHost": "127.0.0.1:4732",
-    "remoteBackendToken": "***",
-    "defaultAccessMode": "current"
-  }
-}
-```
-
-**Notes**
-
-- Persists to `<data-dir>/settings.json`.
-
-- Also writes experimental feature flags to `$CODEX_HOME/config.toml` via `codex_config` helpers.
-
-
-
-### `codex_doctor`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `codexBin` | `string|null` | no | Optional override for the codex binary to probe (defaults to settings.codex_bin or `codex`). |
-
-
-**Response**
-
-CodexDoctorResult (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "codex_doctor",
-  "params": {}
-}
-```
-```json
-{
-  "id": 20,
-  "result": {
-    "ok": true,
-    "codexBin": "codex",
-    "version": "...",
-    "appServerOk": true,
-    "details": null,
-    "path": "/usr/local/bin:...",
-    "nodeOk": true,
-    "nodeVersion": "v20.11.0",
-    "nodeDetails": null
-  }
-}
-```
-
-**Notes**
-
-- Runs `codex --version` and `codex app-server --help` with timeouts to validate install.
-
-- Also checks `node --version` (Codex depends on Node).
-
-
-
+Provides the `useLifeStream(...)` return object to the Life Stream UI subtree. It throws if used outside the provider.
 
 ---
 
-## Commit message helpers
-
-### `get_commit_message_prompt`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-string (prompt text)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_commit_message_prompt",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 21,
-  "result": "You are a helpful assistant..."
-}
-```
-
-**Notes**
-
-- Builds a prompt based on `git diff` / workspace diff for commit message generation.
-
-
-
-### `generate_commit_message`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-string (generated commit message)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "generate_commit_message",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 22,
-  "result": "feat: improve prompt parsing\\n\\n- ..."
-}
-```
-
-**Notes**
-
-- Creates a temporary Codex thread, streams assistant deltas internally, and archives the thread when done.
-
-- These streaming events are suppressed from broadcast so they do not pollute connected clients’ conversations.
-
-
-
-
----
-
-## Threads & turns (Codex app-server)
-
-### `start_thread`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-
-
-**Response**
-
-Codex app-server response envelope for `thread/new` (often contains `result.thread`).
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "start_thread",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 23,
-  "result": {
-    "id": 1,
-    "result": {
-      "thread": {
-        "id": "t1",
-        "title": "New thread",
-        "createdAt": "..."
-      }
-    }
-  }
-}
-```
-
-**Notes**
-
-- The daemon returns the *raw Codex app-server response* as its `result`. Clients often unwrap `result.result`.
-
-
-
-### `resume_thread`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `threadId` | `string` | yes | Thread id to resume. |
-
-
-**Response**
-
-Codex app-server response envelope for `thread/resume`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "resume_thread",
-  "params": {
-    "workspaceId": "...",
-    "threadId": "..."
-  }
-}
-```
-```json
-{
-  "id": 24,
-  "result": {
-    "id": 2,
-    "result": {
-      "thread": {
-        "id": "t1",
-        "...": true
-      }
-    }
-  }
-}
-```
-
-**Notes**
-
-- Resuming a thread causes Codex to replay persisted conversation items; clients refresh local cache accordingly.
-
-
-
-### `list_threads`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `cursor` | `string|null` | no | Optional pagination cursor. |
-| `limit` | `number|null` | no | Optional max items (u32). |
-
-
-**Response**
-
-Codex app-server response envelope for `thread/list`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "list_threads",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 25,
-  "result": {
-    "id": 3,
-    "result": {
-      "threads": [
-        {
-          "id": "t1",
-          "title": "..."
-        }
-      ],
-      "nextCursor": null
-    }
-  }
-}
-```
-
-**Notes**
-
-- The desktop filters threads by `cwd` to show only threads for the workspace (see README / desktop hooks).
-
-
-
-### `archive_thread`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `threadId` | `string` | yes | Thread id to archive. |
-
-
-**Response**
-
-Codex app-server response envelope for `thread/archive`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "archive_thread",
-  "params": {
-    "workspaceId": "...",
-    "threadId": "..."
-  }
-}
-```
-```json
-{
-  "id": 26,
-  "result": {
-    "id": 4,
-    "result": {
-      "ok": true
-    }
-  }
-}
-```
-
-**Notes**
-
-- The daemon only supports archiving (no unarchive endpoint).
-
-
-
-### `send_user_message`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `threadId` | `string` | yes | Thread id. |
-| `text` | `string` | yes | User message text (may be empty if images provided). |
-| `model` | `string|null` | no | Optional model override. |
-| `effort` | `string|null` | no | Optional reasoning effort (Codex-specific). |
-| `accessMode` | `string|null` | no | One of: `current`, `read-only`, `full-access` (default current). |
-| `images` | `string[]|null` | no | Optional images. Each string may be a `data:` URL, `http(s)` URL, or a local filesystem path (desktop). |
-| `collaborationMode` | `any|null` | no | Optional collaboration mode payload forwarded to Codex. |
-
-
-**Response**
-
-Codex app-server response envelope for `turn/start`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "send_user_message",
-  "params": {
-    "workspaceId": "...",
-    "threadId": "...",
-    "text": "..."
-  }
-}
-```
-```json
-{
-  "id": 27,
-  "result": {
-    "id": 5,
-    "result": {
-      "turnId": "turn_1",
-      "status": "started"
-    }
-  }
-}
-```
-
-**Notes**
-
-- The main content is streamed back via `app-server-event` notifications; this call’s response is just the initial app-server reply.
-
-- If both `text` and `images` are empty, returns `empty user message`.
-
-- iOS currently sends image attachments as `data:image/...;base64,...` strings.
-
-
-
-### `turn_interrupt`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `threadId` | `string` | yes | Thread id. |
-| `turnId` | `string` | yes | Turn id to interrupt. |
-
-
-**Response**
-
-Codex app-server response envelope for `turn/interrupt`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "turn_interrupt",
-  "params": {
-    "workspaceId": "...",
-    "threadId": "...",
-    "turnId": "..."
-  }
-}
-```
-```json
-{
-  "id": 28,
-  "result": {
-    "id": 6,
-    "result": {
-      "ok": true
-    }
-  }
-}
-```
-
-**Notes**
-
-- Used to stop an in-flight assistant turn.
-
-
-
-### `start_review`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `threadId` | `string` | yes | Thread id. |
-| `target` | `any` | yes | Review target object forwarded to Codex (see ReviewTarget in DATA_MODELS.md). |
-| `delivery` | `string|null` | no | Optional delivery hint (Codex-specific). |
-
-
-**Response**
-
-Codex app-server response envelope for `review/start`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "start_review",
-  "params": {
-    "workspaceId": "...",
-    "threadId": "...",
-    "target": {}
-  }
-}
-```
-```json
-{
-  "id": 29,
-  "result": {
-    "id": 7,
-    "result": {
-      "ok": true
-    }
-  }
-}
-```
-
-**Notes**
-
-- The daemon does not validate `target` beyond requiring it to exist; it is forwarded to Codex unchanged.
-
-
-
-### `model_list`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-
-
-**Response**
-
-Codex app-server response envelope for `model/list`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "model_list",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 30,
-  "result": {
-    "id": 8,
-    "result": {
-      "models": [
-        {
-          "id": "gpt-4.1",
-          "label": "GPT‑4.1"
-        }
-      ]
-    }
-  }
-}
-```
-
-**Notes**
-
-- Exact payload is determined by Codex.
-
-
-
-### `collaboration_mode_list`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-Codex app-server response envelope for `collaborationMode/list`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "collaboration_mode_list",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 31,
-  "result": {
-    "id": 9,
-    "result": {
-      "modes": [
-        {
-          "id": "solo",
-          "label": "Solo"
-        }
-      ]
-    }
-  }
-}
-```
-
-**Notes**
-
-- Only meaningful when Codex feature flag `features.collab` is enabled.
-
-
-
-### `account_rate_limits`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-Codex app-server response envelope for `account/rateLimits`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "account_rate_limits",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 32,
-  "result": {
-    "id": 10,
-    "result": {
-      "snapshot": {
-        "requestsRemaining": 123
-      }
-    }
-  }
-}
-```
-
-**Notes**
-
-- Streaming updates may also arrive via `account/rateLimits/updated` events.
-
-
-
-### `skills_list`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-Codex app-server response envelope for `skills/list`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "skills_list",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 33,
-  "result": {
-    "id": 11,
-    "result": {
-      "skills": [
-        {
-          "name": "format",
-          "description": "..."
-        }
-      ]
-    }
-  }
-}
-```
-
-**Notes**
-
-- Used for `$skill` autocomplete in the composer.
-
-
-
-### `respond_to_server_request`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `requestId` | `number` | yes | Codex request id to respond to (u64). |
-| `result` | `any` | yes | Response payload to send as the request result. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "respond_to_server_request",
-  "params": {
-    "workspaceId": "...",
-    "requestId": 1,
-    "result": {}
-  }
-}
-```
-```json
-{
-  "id": 34,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Used to respond to Codex-initiated requests (commonly approvals).
-
-- This writes a response message directly to Codex stdin (`{{"id":...,"result":...}}`).
-
-
-
-### `remember_approval_rule`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `command` | `string[]` | yes | Command argv to remember as an allowed prefix rule. |
-
-
-**Response**
-
-{ ok: true, rulesPath: string }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "remember_approval_rule",
-  "params": {
-    "workspaceId": "...",
-    "command": [
-      "..."
-    ]
-  }
-}
-```
-```json
-{
-  "id": 35,
-  "result": {
-    "ok": true,
-    "rulesPath": "/Users/me/.codex/rules/default.rules"
-  }
-}
-```
-
-**Notes**
-
-- Appends a prefix rule to the Codex rules file under CODEX_HOME (`rules::append_prefix_rule`).
-
-- This is security-sensitive: it changes which commands Codex can execute without prompting.
-
-
-
-
----
-
-## Git
-
-### `list_git_roots`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `depth` | `number|null` | no | Optional scan depth (defaults 2, clamped 1..6). |
-
-
-**Response**
-
-string[] (absolute paths to nested git repos under the workspace root)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "list_git_roots",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 40,
-  "result": [
-    "/Users/me/Repo",
-    ".",
-    "/Users/me/Repo/packages/pkg-a"
-  ]
-}
-```
-
-**Notes**
-
-- Used by UI to select which git root to operate on when multiple repos exist.
-
-
-
-### `get_git_status`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-GitStatusResponse (Swift) / GitStatusState (desktop) — see DATA_MODELS.md
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_git_status",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 41,
-  "result": {
-    "branchName": "main",
-    "files": [],
-    "stagedFiles": [],
-    "unstagedFiles": [],
-    "totalAdditions": 0,
-    "totalDeletions": 0
-  }
-}
-```
-
-**Notes**
-
-- Uses libgit2 status API and computes simple addition/deletion totals.
-
-
-
-### `get_git_diffs`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-GitFileDiff[] (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_git_diffs",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 42,
-  "result": [
-    {
-      "path": "src/main.rs",
-      "status": "modified",
-      "additions": 3,
-      "deletions": 1,
-      "hunks": [
-        {
-          "header": "@@ ...",
-          "lines": [
-            "+foo",
-            "-bar"
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-**Notes**
-
-- Returns per-file diffs for the working tree (staged/unstaged depending on implementation).
-
-
-
-### `get_git_log`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `limit` | `number|null` | no | Optional max commits to return. |
-
-
-**Response**
-
-GitLogResponse (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_git_log",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 43,
-  "result": {
-    "entries": [
-      {
-        "sha": "...",
-        "subject": "...",
-        "authorName": "...",
-        "authorEmail": "...",
-        "timestamp": 0
-      }
-    ]
-  }
-}
-```
-
-**Notes**
-
-- Uses libgit2 to walk history from HEAD.
-
-
-
-### `get_git_commit_diff`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `sha` | `string` | yes | Commit SHA. |
-
-
-**Response**
-
-GitFileDiff[] (diff for a specific commit)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_git_commit_diff",
-  "params": {
-    "workspaceId": "...",
-    "sha": "..."
-  }
-}
-```
-```json
-{
-  "id": 44,
-  "result": [
-    {
-      "path": "README.md",
-      "status": "modified",
-      "additions": 1,
-      "deletions": 0,
-      "hunks": [
-        "..."
-      ]
-    }
-  ]
-}
-```
-
-**Notes**
-
-- Computes diffs between the commit and its parent (implementation-specific).
-
-
-
-### `get_git_remote`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-string|null (remote URL)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_git_remote",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 45,
-  "result": "git@github.com:org/repo.git"
-}
-```
-
-**Notes**
-
-- Returns the URL of `origin` if present, otherwise the first remote.
-
-
-
-### `stage_git_file`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `path` | `string` | yes | File path relative to repo root. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "stage_git_file",
-  "params": {
-    "workspaceId": "...",
-    "path": "..."
-  }
-}
-```
-```json
-{
-  "id": 50,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Stages a single file.
-
-
-
-### `stage_git_all`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "stage_git_all",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 51,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Stages all changes.
-
-
-
-### `unstage_git_file`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `path` | `string` | yes | File path relative to repo root. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "unstage_git_file",
-  "params": {
-    "workspaceId": "...",
-    "path": "..."
-  }
-}
-```
-```json
-{
-  "id": 50,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Unstages a single file.
-
-
-
-### `revert_git_file`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `path` | `string` | yes | File path relative to repo root. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "revert_git_file",
-  "params": {
-    "workspaceId": "...",
-    "path": "..."
-  }
-}
-```
-```json
-{
-  "id": 50,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Reverts a single file in the working tree.
-
-
-
-### `revert_git_all`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "revert_git_all",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 51,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Reverts all unstaged changes.
-
-
-
-### `commit_git`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `message` | `string` | yes | Commit message. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "commit_git",
-  "params": {
-    "workspaceId": "...",
-    "message": "..."
-  }
-}
-```
-```json
-{
-  "id": 52,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Creates a commit of staged changes using libgit2.
-
-- Does not push; use `push_git`.
-
-
-
-### `pull_git`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "pull_git",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 53,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Runs a git pull for the repo.
-
-
-
-### `push_git`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "push_git",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 53,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Runs a git push for the repo.
-
-
-
-### `sync_git`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "sync_git",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 53,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Convenience: pull then push (implementation-specific).
-
-
-
-### `list_git_branches`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-{ branches: BranchInfo[] } (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "list_git_branches",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 54,
-  "result": {
-    "branches": [
-      {
-        "name": "main",
-        "last_commit": 1700000000
-      }
-    ]
-  }
-}
-```
-
-**Notes**
-
-- Returns local branches sorted by most recent commit time.
-
-
-
-### `checkout_git_branch`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `name` | `string` | yes | Branch name. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "checkout_git_branch",
-  "params": {
-    "workspaceId": "...",
-    "name": "..."
-  }
-}
-```
-```json
-{
-  "id": 55,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Checks out an existing local branch.
-
-
-
-### `create_git_branch`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `name` | `string` | yes | New branch name. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "create_git_branch",
-  "params": {
-    "workspaceId": "...",
-    "name": "..."
-  }
-}
-```
-```json
-{
-  "id": 55,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Creates a new local branch from HEAD and checks it out (implementation-specific).
-
-
-
-
----
-
-## GitHub (via gh CLI)
-
-### `get_github_issues`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (used to determine repo remote). |
-
-
-**Response**
-
-GitHubIssue[] (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_github_issues",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 60,
-  "result": [
-    {
-      "number": 1,
-      "title": "Bug",
-      "state": "open",
-      "url": "...",
-      "author": {
-        "login": "me"
-      }
-    }
-  ]
-}
-```
-
-**Notes**
-
-- Uses `gh` CLI; requires `gh auth login` on the daemon host.
-
-- Repo is inferred from the git remote URL.
-
-
-
-### `get_github_pull_requests`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-GitHubPullRequest[] (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_github_pull_requests",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 61,
-  "result": [
-    {
-      "number": 12,
-      "title": "PR",
-      "state": "open",
-      "url": "...",
-      "author": {
-        "login": "me"
-      },
-      "baseRefName": "main",
-      "headRefName": "feature"
-    }
-  ]
-}
-```
-
-**Notes**
-
-- Uses `gh` CLI.
-
-
-
-### `get_github_pull_request_diff`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `prNumber` | `number` | yes | Pull request number. |
-
-
-**Response**
-
-GitHubPullRequestDiffResponse (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_github_pull_request_diff",
-  "params": {
-    "workspaceId": "...",
-    "prNumber": 1
-  }
-}
-```
-```json
-{
-  "id": 62,
-  "result": {
-    "diff": "..."
-  }
-}
-```
-
-**Notes**
-
-- Uses `gh pr diff` / GitHub API via gh.
-
-
-
-### `get_github_pull_request_comments`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `prNumber` | `number` | yes | Pull request number. |
-
-
-**Response**
-
-GitHubPullRequestCommentsResponse (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "get_github_pull_request_comments",
-  "params": {
-    "workspaceId": "...",
-    "prNumber": 1
-  }
-}
-```
-```json
-{
-  "id": 62,
-  "result": {
-    "diff": "..."
-  }
-}
-```
-
-**Notes**
-
-- Uses `gh api` to fetch review comments.
-
-
-
-
----
-
-## Prompts
-
-### `prompts_list`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (used for workspace-scoped prompts). |
-
-
-**Response**
-
-CustomPromptOption[]
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "prompts_list",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 70,
-  "result": [
-    {
-      "name": "Bugfix",
-      "path": "/.../Bugfix.md",
-      "description": "...",
-      "content": "...",
-      "scope": "workspace"
-    }
-  ]
-}
-```
-
-**Notes**
-
-- Loads both global prompts from `$CODEX_HOME/prompts` and workspace prompts from `<data-dir>/workspaces/<id>/prompts`.
-
-
-
-### `prompts_create`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `scope` | `string` | yes | `global` or `workspace`. |
-| `name` | `string` | yes | Prompt name (filename). |
-| `description` | `string|null` | no | Optional description. |
-| `argumentHint` | `string|null` | no | Optional argument hint. |
-| `content` | `string` | yes | Prompt body content. |
-
-
-**Response**
-
-CustomPromptOption (created)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "prompts_create",
-  "params": {
-    "workspaceId": "...",
-    "scope": "...",
-    "name": "...",
-    "content": "..."
-  }
-}
-```
-```json
-{
-  "id": 71,
-  "result": {
-    "name": "MyPrompt",
-    "path": "/.../MyPrompt.md",
-    "content": "...",
-    "scope": "global"
-  }
-}
-```
-
-**Notes**
-
-- Persists prompt as a file. Description and argumentHint may be stored as frontmatter/metadata (see prompts module).
-
-
-
-### `prompts_update`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `path` | `string` | yes | Existing prompt file path. |
-| `name` | `string` | yes | Updated name. |
-| `description` | `string|null` | no | Updated description. |
-| `argumentHint` | `string|null` | no | Updated argument hint. |
-| `content` | `string` | yes | Updated prompt content. |
-
-
-**Response**
-
-CustomPromptOption (updated)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "prompts_update",
-  "params": {
-    "workspaceId": "...",
-    "path": "...",
-    "name": "...",
-    "content": "..."
-  }
-}
-```
-```json
-{
-  "id": 72,
-  "result": {
-    "name": "MyPrompt",
-    "path": "/.../MyPrompt.md",
-    "content": "...",
-    "scope": "workspace"
-  }
-}
-```
-
-**Notes**
-
-- May rename the underlying file if `name` changes.
-
-
-
-### `prompts_delete`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `path` | `string` | yes | Prompt file path to delete. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "prompts_delete",
-  "params": {
-    "workspaceId": "...",
-    "path": "..."
-  }
-}
-```
-```json
-{
-  "id": 73,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Deletes the prompt file from disk.
-
-
-
-### `prompts_move`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-| `path` | `string` | yes | Prompt file path. |
-| `scope` | `string` | yes | `global` or `workspace` (target scope). |
-
-
-**Response**
-
-CustomPromptOption (moved)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "prompts_move",
-  "params": {
-    "workspaceId": "...",
-    "path": "...",
-    "scope": "..."
-  }
-}
-```
-```json
-{
-  "id": 74,
-  "result": {
-    "name": "MyPrompt",
-    "path": "/new/path/MyPrompt.md",
-    "scope": "global",
-    "content": "..."
-  }
-}
-```
-
-**Notes**
-
-- Moves a prompt between workspace and global directories.
-
-
-
-### `prompts_workspace_dir`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id. |
-
-
-**Response**
-
-string (absolute directory path)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "prompts_workspace_dir",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 75,
-  "result": "/.../<data-dir>/workspaces/<id>/prompts"
-}
-```
-
-**Notes**
-
-- Returns the workspace prompts folder path on the daemon host.
-
-
-
-### `prompts_global_dir`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-_No params._
-
-
-**Response**
-
-string (absolute directory path)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "prompts_global_dir"
-}
-```
-```json
-{
-  "id": 76,
-  "result": "/Users/me/.codex/prompts"
-}
-```
-
-**Notes**
-
-- Returns the global prompts folder under CODEX_HOME.
-
-
-
-
----
-
-## Terminal
-
-### `terminal_open`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (cwd for the shell). |
-| `terminalId` | `string` | yes | Client-chosen identifier for this terminal tab. |
-| `cols` | `number` | yes | Initial terminal columns (u32, clamped to u16::MAX). |
-| `rows` | `number` | yes | Initial terminal rows (u32, clamped to u16::MAX). |
-
-
-**Response**
-
-{ id: string } (TerminalSessionInfo)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "terminal_open",
-  "params": {
-    "workspaceId": "...",
-    "terminalId": "...",
-    "cols": 1,
-    "rows": 1
-  }
-}
-```
-```json
-{
-  "id": 80,
-  "result": {
-    "id": "term-1"
-  }
-}
-```
-
-**Notes**
-
-- Spawns a PTY shell (uses `$SHELL` if available, otherwise a default).
-
-- Output is streamed back via `terminal-output` notifications.
-
-
-
-### `terminal_write`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `terminalId` | `string` | yes | Terminal session id. |
-| `data` | `string` | yes | Bytes to write (usually UTF-8). |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "terminal_write",
-  "params": {
-    "terminalId": "...",
-    "data": "..."
-  }
-}
-```
-```json
-{
-  "id": 81,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Writes raw data to the PTY writer.
-
-
-
-### `terminal_resize`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `terminalId` | `string` | yes | Terminal session id. |
-| `cols` | `number` | yes | Columns. |
-| `rows` | `number` | yes | Rows. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "terminal_resize",
-  "params": {
-    "terminalId": "...",
-    "cols": 1,
-    "rows": 1
-  }
-}
-```
-```json
-{
-  "id": 82,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Resizes the PTY. Values are clamped to u16::MAX.
-
-
-
-### `terminal_close`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `terminalId` | `string` | yes | Terminal session id. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "terminal_close",
-  "params": {
-    "terminalId": "..."
-  }
-}
-```
-```json
-{
-  "id": 83,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Kills the PTY child process and removes the session from memory.
-
-
-
-
----
-
-## Local usage
-
-### `local_usage_snapshot`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `days` | `number|null` | no | How many past days to scan (default 7). |
-| `workspacePath` | `string|null` | no | Optional workspace path filter. |
-
-
-**Response**
-
-LocalUsageSnapshot (see DATA_MODELS.md)
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "local_usage_snapshot",
-  "params": {}
-}
-```
-```json
-{
-  "id": 90,
-  "result": {
-    "days": [],
-    "totals": {
-      "requests": 0,
-      "inputTokens": 0,
-      "outputTokens": 0
-    }
-  }
-}
-```
-
-**Notes**
-
-- Scans Codex session JSONL logs under `$CODEX_HOME/sessions/...`.
-
-- Purely local; does not require a connected workspace session.
-
-
-
-
----
-
-## Memory
-
-### `memory_flush_now`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `threadId` | `string` | yes | Thread id to flush memory for. |
-
-
-**Response**
-
-Codex app-server response envelope for `memory/flushNow`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "memory_flush_now",
-  "params": {
-    "workspaceId": "...",
-    "threadId": "..."
-  }
-}
-```
-```json
-{
-  "id": 100,
-  "result": {
-    "id": 1,
-    "result": {
-      "ok": true
-    }
-  }
-}
-```
-
-**Notes**
-
-- Manually triggers a memory flush for the specified thread.
-
-- Useful when you want to persist conversation context immediately rather than waiting for automatic flush.
-
-
-
----
-
-## Browser
-
-### `browser_create_session`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-
-
-**Response**
-
-Codex app-server response envelope for `browser/createSession`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "browser_create_session",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 101,
-  "result": {
-    "id": 1,
-    "result": {
-      "sessionId": "browser-session-abc123"
-    }
-  }
-}
-```
-
-**Notes**
-
-- Creates a new browser automation session.
-
-- Returns a session ID to use with other browser methods.
-
-
-
-### `browser_list_sessions`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-
-
-**Response**
-
-Codex app-server response envelope for `browser/listSessions`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "browser_list_sessions",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 102,
-  "result": {
-    "id": 1,
-    "result": {
-      "sessions": [
-        {
-          "sessionId": "browser-session-abc123",
-          "url": "https://example.com"
-        }
-      ]
-    }
-  }
-}
-```
-
-**Notes**
-
-- Lists all active browser sessions for the workspace.
-
-
-
-### `browser_close_session`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `sessionId` | `string` | yes | Browser session id to close. |
-
-
-**Response**
-
-Codex app-server response envelope for `browser/closeSession`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "browser_close_session",
-  "params": {
-    "workspaceId": "...",
-    "sessionId": "..."
-  }
-}
-```
-```json
-{
-  "id": 103,
-  "result": {
-    "id": 1,
-    "result": {
-      "ok": true
-    }
-  }
-}
-```
-
-**Notes**
-
-- Closes and cleans up a browser session.
-
-
-
-### `browser_navigate`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `sessionId` | `string` | yes | Browser session id. |
-| `url` | `string` | yes | URL to navigate to. |
-
-
-**Response**
-
-Codex app-server response envelope for `browser/navigate`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "browser_navigate",
-  "params": {
-    "workspaceId": "...",
-    "sessionId": "...",
-    "url": "https://example.com"
-  }
-}
-```
-```json
-{
-  "id": 104,
-  "result": {
-    "id": 1,
-    "result": {
-      "ok": true,
-      "url": "https://example.com"
-    }
-  }
-}
-```
-
-**Notes**
-
-- Navigates the browser session to the specified URL.
-
-
-
-### `browser_screenshot`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `sessionId` | `string` | yes | Browser session id. |
-
-
-**Response**
-
-Codex app-server response envelope for `browser/screenshot`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "browser_screenshot",
-  "params": {
-    "workspaceId": "...",
-    "sessionId": "..."
-  }
-}
-```
-```json
-{
-  "id": 105,
-  "result": {
-    "id": 1,
-    "result": {
-      "data": "data:image/png;base64,..."
-    }
-  }
-}
-```
-
-**Notes**
-
-- Takes a screenshot of the current browser page.
-
-- Returns a base64-encoded image.
-
-
-
-### `browser_click`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `sessionId` | `string` | yes | Browser session id. |
-| `x` | `number` | no | X coordinate (pixels). Required if selector not provided. |
-| `y` | `number` | no | Y coordinate (pixels). Required if selector not provided. |
-| `selector` | `string` | no | CSS selector to click. Alternative to x/y coordinates. |
-
-
-**Response**
-
-Codex app-server response envelope for `browser/click`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "browser_click",
-  "params": {
-    "workspaceId": "...",
-    "sessionId": "...",
-    "x": 100,
-    "y": 200
-  }
-}
-```
-```json
-{
-  "id": 106,
-  "result": {
-    "id": 1,
-    "result": {
-      "ok": true
-    }
-  }
-}
-```
-
-**Notes**
-
-- Clicks at the specified coordinates or CSS selector.
-
-- Either x/y or selector must be provided.
-
-
-
-### `browser_type`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `sessionId` | `string` | yes | Browser session id. |
-| `text` | `string` | yes | Text to type. |
-
-
-**Response**
-
-Codex app-server response envelope for `browser/type`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "browser_type",
-  "params": {
-    "workspaceId": "...",
-    "sessionId": "...",
-    "text": "Hello, world!"
-  }
-}
-```
-```json
-{
-  "id": 107,
-  "result": {
-    "id": 1,
-    "result": {
-      "ok": true
-    }
-  }
-}
-```
-
-**Notes**
-
-- Types the specified text into the currently focused element.
-
-
-
-### `browser_press`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `sessionId` | `string` | yes | Browser session id. |
-| `key` | `string` | yes | Key to press (e.g., "Enter", "Tab", "Escape", "ArrowDown"). |
-
-
-**Response**
-
-Codex app-server response envelope for `browser/press`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "browser_press",
-  "params": {
-    "workspaceId": "...",
-    "sessionId": "...",
-    "key": "Enter"
-  }
-}
-```
-```json
-{
-  "id": 108,
-  "result": {
-    "id": 1,
-    "result": {
-      "ok": true
-    }
-  }
-}
-```
-
-**Notes**
-
-- Presses a keyboard key.
-
-- Common keys: Enter, Tab, Escape, Backspace, ArrowUp, ArrowDown, ArrowLeft, ArrowRight.
-
-
-
-### `browser_snapshot`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `sessionId` | `string` | yes | Browser session id. |
-
-
-**Response**
-
-Codex app-server response envelope for `browser/snapshot`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "browser_snapshot",
-  "params": {
-    "workspaceId": "...",
-    "sessionId": "..."
-  }
-}
-```
-```json
-{
-  "id": 109,
-  "result": {
-    "id": 1,
-    "result": {
-      "screenshot": "data:image/png;base64,...",
-      "dom": "<html>...</html>",
-      "url": "https://example.com"
-    }
-  }
-}
-```
-
-**Notes**
-
-- Gets a full page snapshot including screenshot and DOM content.
-
-- Useful for understanding the current page state.
-
-
-
-### `browser_evaluate`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `sessionId` | `string` | yes | Browser session id. |
-| `script` | `string` | yes | JavaScript code to execute. |
-
-
-**Response**
-
-Codex app-server response envelope for `browser/evaluate`.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "browser_evaluate",
-  "params": {
-    "workspaceId": "...",
-    "sessionId": "...",
-    "script": "document.title"
-  }
-}
-```
-```json
-{
-  "id": 110,
-  "result": {
-    "id": 1,
-    "result": {
-      "value": "Example Page Title"
-    }
-  }
-}
-```
-
-**Notes**
-
-- Executes JavaScript in the browser context and returns the result.
-
-- The script runs in the page's execution context.
-
-
-
----
-
-## Skills (Extended)
-
-### `skills_config_write`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-| `config` | `object` | yes | Configuration object with `enabled` and `disabled` arrays. |
-
-The `config` object structure:
-
-```json
-{
-  "enabled": [{ "name": "skill-name", "path": "/path/to/skill" }],
-  "disabled": [{ "name": "other-skill", "path": "/path/to/other" }]
-}
-```
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "skills_config_write",
-  "params": {
-    "workspaceId": "...",
-    "config": {
-      "enabled": [{ "name": "format", "path": "/path/to/format" }],
-      "disabled": []
-    }
-  }
-}
-```
-```json
-{
-  "id": 111,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Writes the skills configuration to `{CODEX_HOME}/skills/config.json`.
-- Config specifies which skills are enabled and which are disabled.
-- Skills not in either list default to enabled.
-
-
-
-### `skills_validate`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-
-
-**Response**
-
-Array of `SkillValidationResult` objects.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "skills_validate",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 112,
-  "result": [
-    {
-      "name": "format",
-      "path": "/path/to/format",
-      "description": "Code formatting skill",
-      "issues": []
-    },
-    {
-      "name": "browser-tool",
-      "path": "/path/to/browser-tool",
-      "description": "Browser automation",
-      "issues": ["missing binary: playwright", "missing env var: BROWSER_PATH"]
-    }
-  ]
-}
-```
-
-**Notes**
-
-- Validates all installed skills in the workspace.
-
-- Each result includes the skill name, path, description, and array of issues.
-
-- Issues include: missing binaries, missing env vars, unsupported OS.
-
-- Empty `issues` array means the skill is valid and ready to use.
-
-
-
-### `skills_install_from_git`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `sourceUrl` | `string` | yes | Git repository URL containing the skill. |
-| `target` | `string` | yes | Installation target: `"global"` or `"workspace"`. |
-| `workspaceId` | `string` | conditional | Required when `target` is `"workspace"`. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "skills_install_from_git",
-  "params": {
-    "sourceUrl": "https://github.com/example/my-skill.git",
-    "target": "workspace",
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 113,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Clones the git repository into the skills directory.
-
-- `"global"` target installs to `$CODEX_HOME/skills/`.
-
-- `"workspace"` target installs to `<workspace>/.codex/skills/`.
-
-- The repository should contain a `SKILL.md` file at its root.
-
-
-
-### `skills_uninstall`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `name` | `string` | yes | Name of the skill (repository folder name). |
-| `target` | `string` | yes | Uninstall target: `"global"` or `"workspace"`. |
-| `workspaceId` | `string` | conditional | Required when `target` is `"workspace"`. |
-
-
-**Response**
-
-{ ok: true }
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "skills_uninstall",
-  "params": {
-    "name": "my-skill",
-    "target": "workspace",
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 114,
-  "result": {
-    "ok": true
-  }
-}
-```
-
-**Notes**
-
-- Removes an installed skill by deleting its directory.
-
-- `"global"` target removes from `$CODEX_HOME/skills/`.
-
-- `"workspace"` target removes from `<workspace>/.codex/skills/`.
-
-- Only works for user-installed skills, not built-in skills.
-
-
-
-### `skills_config_read`
-
-- **Direction:** client → daemon
-- **Auth required:** yes
-
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Workspace id (must be connected). |
-
-
-**Response**
-
-Skills configuration object.
-
-
-**Example**
-
-```json
-{
-  "id": 1,
-  "method": "skills_config_read",
-  "params": {
-    "workspaceId": "..."
-  }
-}
-```
-```json
-{
-  "id": 115,
-  "result": {
-    "enabled": [
-      { "name": "format", "path": "/path/to/format" }
-    ],
-    "disabled": [
-      { "name": "browser-tool", "path": "/path/to/browser-tool" }
-    ]
-  }
-}
-```
-
-**Notes**
-
-- Reads the skills configuration from `{CODEX_HOME}/skills/config.json`.
-
-- Returns empty arrays if no config file exists.
-
-- Used by UI to determine which skills are enabled/disabled.
-
-
----
-
-## Server → client notifications
-
-Once authenticated, a client connection subscribes to a broadcast stream.
-
-### `app-server-event`
-
-- **Direction:** daemon → client (notification)
-- **Auth required:** yes (subscription happens only after auth)
-- **Params:** `AppServerEvent`:
-  - `workspace_id: string`
-  - `message: any` (raw message from Codex app-server)
-
-Example:
-
-```json
-{
-  "method": "app-server-event",
-  "params": {
-    "workspace_id": "w1",
-    "message": {
-      "method": "item/agentMessage/delta",
-      "params": {
-        "delta": "Hello"
-      }
-    }
-  }
-}
-```
-
-Notes:
-- `message` is forwarded unmodified from Codex. The clients interpret it (see `docs/DESKTOP_APP.md` and `docs/IOS_CLIENT.md`).
-
-
-### `terminal-output`
-
-- **Direction:** daemon → client (notification)
-- **Auth required:** yes
-- **Params:** `TerminalOutput`:
-  - `workspaceId: string`
-  - `terminalId: string`
-  - `data: string`
-
-Example:
-
-```json
-{
-  "method": "terminal-output",
-  "params": {
-    "workspaceId": "w1",
-    "terminalId": "term-1",
-    "data": "ls\\r\\n"
-  }
-}
-```
-
-Notes:
-- This is raw PTY output. Clients are responsible for emulation/rendering.
-
----
-
-## Browser (Updated 2026-01-26)
-
-All browser methods are daemon RPCs that proxy to the Playwright worker. No `workspaceId` required.
-
-### `browser_create_session`
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `headless` | `boolean` | no | Defaults true |
-| `viewport` | `object` | no | `{ width, height }` |
-| `userDataDir` | `string` | no | Persistent profile dir |
-| `startUrl` | `string` | no | Optional initial URL |
-
-**Response**
-
-```json
-{ "sessionId": "b-..." }
-```
-
-### `browser_list_sessions`
-
-**Response**
-
-```json
-{ "sessions": ["b-..."] }
-```
-
-### `browser_navigate`
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `sessionId` | `string` | yes | Session id |
-| `url` | `string` | yes | URL |
-| `waitUntil` | `string` | no | `load`/`domcontentloaded`/`networkidle` |
-| `timeoutMs` | `number` | no | Timeout |
-
-### `browser_screenshot`
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `sessionId` | `string` | yes | Session id |
-| `fullPage` | `boolean` | no | Full page screenshot |
-
-**Response**
-
-```json
-{ "base64Png": "...", "url": "...", "title": "...", "width": 1280, "height": 720 }
-```
-
-### `browser_click`, `browser_type`, `browser_press`, `browser_evaluate`, `browser_snapshot`, `browser_close_session`
-
-See worker protocol in `browser-worker/src/index.ts` for exact params.
-
----
-
-## Skills (Updated 2026-01-26)
-
-### `skills_config_write`
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Connected workspace |
-| `config` | `object` | yes | Passed to `skills/config/write` |
-
-### `skills_validate`
-
-**Response**
-
-```json
-[{ "name": "...", "path": "...", "issues": [], "description": "..." }]
-```
-
-### `skills_install_from_git`
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `sourceUrl` | `string` | yes | Git URL |
-| `target` | `string` | yes | `global` or `workspace` |
-| `workspaceId` | `string` | no | Required for `workspace` target |
-
-### `skills_uninstall`
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `name` | `string` | yes | Repo folder name |
-| `target` | `string` | yes | `global` or `workspace` |
-| `workspaceId` | `string` | no | Required for `workspace` target |
-
-### `skills_config_read`
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `workspaceId` | `string` | yes | Connected workspace |
-
-**Response**
-
-```json
-{ "enabled": [{"name":"...","path":"..."}], "disabled": [] }
-```
-
----
-
-## Global Configuration Files (2026-01-28)
-
-### `read_global_agents_md`
-
-Read the global AGENTS.md file from `~/.codex/AGENTS.md`.
-
-**Request params**
-
-_None_
-
-**Response**
-
-```json
-{
-  "exists": true,
-  "content": "# My Agents\n...",
-  "truncated": false
-}
-```
-
-| Field | Type | Description |
-|------|------|-------------|
-| `exists` | `boolean` | Whether the file exists on disk |
-| `content` | `string` | File contents (empty if not exists) |
-| `truncated` | `boolean` | Whether content was truncated |
-
----
-
-### `write_global_agents_md`
-
-Write the global AGENTS.md file to `~/.codex/AGENTS.md`.
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `content` | `string` | yes | File contents to write |
-
-**Response**
-
-_None (empty object on success)_
-
----
-
-### `read_global_config_toml`
-
-Read the global Codex config.toml file from `~/.codex/config.toml`.
-
-**Request params**
-
-_None_
-
-**Response**
-
-```json
-{
-  "exists": true,
-  "content": "[features]\n...",
-  "truncated": false
-}
-```
-
-| Field | Type | Description |
-|------|------|-------------|
-| `exists` | `boolean` | Whether the file exists on disk |
-| `content` | `string` | File contents (empty if not exists) |
-| `truncated` | `boolean` | Whether content was truncated |
-
----
-
-### `write_global_config_toml`
-
-Write the global Codex config.toml file to `~/.codex/config.toml`.
-
-**Request params**
-
-| Field | Type | Required | Description |
-|------|------|----------|-------------|
-| `content` | `string` | yes | File contents to write |
-
-**Response**
-
-_None (empty object on success)_
+## Related docs
+
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [DATA_MODELS.md](DATA_MODELS.md)
+- [MCP_INTEGRATION.md](MCP_INTEGRATION.md)
+- [LIFE_STREAM.md](LIFE_STREAM.md)
+- [STATE_MANAGEMENT.md](STATE_MANAGEMENT.md)
+- [GOTCHAS.md](GOTCHAS.md)
