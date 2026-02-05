@@ -35,6 +35,7 @@ impl CardState {
 pub enum CardType {
     Meal,
     DeliveryOrder,
+    DeliverySession,
     MediaAdd,
     Music,
     Thought,
@@ -132,6 +133,16 @@ pub struct CardSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardRequestMeta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "accessMode")]
+    pub access_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamCard {
     pub id: String,
     #[serde(rename = "occurredAt")]
@@ -156,6 +167,8 @@ pub struct StreamCard {
     pub title: String,
     pub subtitle: Option<String>,
     pub summary: Option<String>,
+    #[serde(rename = "durationMs")]
+    pub duration_ms: Option<u64>,
 
     pub image: Option<CardImage>,
 
@@ -164,6 +177,11 @@ pub struct StreamCard {
 
     #[serde(rename = "originalInput")]
     pub original_input: Option<String>,
+
+    #[serde(rename = "assistantPreview")]
+    pub assistant_preview: Option<String>,
+
+    pub request: Option<CardRequestMeta>,
 
     pub source: Option<CardSource>,
 
@@ -225,8 +243,14 @@ pub struct StreamCardPatch {
     #[serde(skip_serializing_if = "Option::is_none", rename = "processingSteps")]
     pub processing_steps: Option<Vec<String>>,
 
+    #[serde(skip_serializing_if = "Option::is_none", rename = "durationMs")]
+    pub duration_ms: Option<u64>,
+
     #[serde(skip_serializing_if = "Option::is_none", rename = "errorMessage")]
     pub error_message: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none", rename = "assistantPreview")]
+    pub assistant_preview: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<HashMap<String, CardStatValue>>,

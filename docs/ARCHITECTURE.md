@@ -7,7 +7,7 @@ This documentation maps the **Life OS ecosystem** across 4 projects:
 - **Obsidian Vault** — primary datastore (stream logs + entity files + indexes)
 - **life-os** — system root (domain YAML configs + command runner + docs)
 
-**Last updated:** 2026-02-02
+**Last updated:** 2026-02-05
 **Root:** `/Volumes/YouTube 4TB/`
 
 ## Project roots
@@ -175,6 +175,24 @@ Because tools can return JSON in multiple formats, the parser supports:
 - `content: [{ type: "json", json: {...} }]`
 - `content: [{ type: "text", text: "...{json}..." }]`
 - `{ result: {...} }` and other nested wrappers (legacy / interoperability)
+
+---
+
+## Codex app-server harness alignment (2026‑02‑05)
+
+**Why:** OpenAI’s App Server harness expects **streaming events** (items/turns/threads) over a **JSONL, JSON‑RPC‑lite** protocol. We align to those expectations for stability.
+
+**Key rules enforced:**
+- **Initialize handshake is mandatory** before any other request. The client sends `initialize`, receives negotiated capabilities, then sends `initialized`.
+- **Streaming model:** `item/started` → `item/*/delta` → `item/completed` and `turn/started` → `turn/completed` (thread‑scoped).
+- **JSONL framing:** newline‑delimited JSON over stdio (no `jsonrpc` header).
+
+**Binary pinning:**
+- The app honors `codexBin` (settings/workspace) to pin a specific Codex binary.
+- The app logs + emits `codex/version` and `codex/capabilities` events when sessions start.
+
+**Schema sync tooling:**
+- `./scripts/sync-codex-schema.sh` generates protocol artifacts in `docs/_protocol/`.
 
 ---
 

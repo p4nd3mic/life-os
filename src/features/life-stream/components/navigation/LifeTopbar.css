@@ -1,0 +1,85 @@
+.life-topbar {
+  display: grid;
+  grid-template-columns: minmax(100px, auto) auto minmax(0, auto);
+  align-items: center;
+  gap: 12px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.app.life-mode .main-topbar.life-topbar {
+  display: grid;
+  grid-template-columns: minmax(100px, auto) auto minmax(0, auto);
+  justify-content: unset;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  padding-left: calc(var(--main-panel-padding) + 10px);
+  padding-right: var(--main-panel-padding);
+  min-height: var(--main-topbar-height);
+}
+
+.life-topbar-left,
+.life-topbar-center,
+.life-topbar-right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+
+.life-topbar-left {
+  justify-content: flex-start;
+}
+
+.life-topbar-center {
+  justify-content: center;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: visible;
+}
+
+.life-topbar-right {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.life-topbar-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.life-topbar-badge-emoji {
+  flex-shrink: 0;
+}
+
+.life-topbar-badge-text {
+  transition: opacity 150ms ease;
+}
+
+
+@media (max-width: 600px) {
+  .life-topbar-badge {
+    font-size: 0.85rem;
+  }
+
+  .life-topbar-badge-text {
+    display: none;
+  }
+}
+
+@media (max-width: 400px) {
+  .life-topbar-badge {
+    font-size: 1rem;
+  }
+}

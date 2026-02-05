@@ -4,9 +4,39 @@ import { listen } from "@tauri-apps/api/event";
 import { streamStore } from "../state/streamStore";
 import type { LifeStreamEvent, StreamCard } from "../types";
 
+type SubmitStatus = {
+  state: "idle" | "sending" | "received" | "created" | "error";
+  message?: string;
+};
+
+type SubmitOptions = {
+  occurredAtIso?: string;
+  modelId?: string | null;
+  effort?: string | null;
+  accessMode?: "read-only" | "current" | "full-access";
+  collaborationMode?: Record<string, unknown> | null;
+};
+
 export function useLifeStream(workspaceId: string | null) {
   const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [submitStatus, setSubmitStatus] = useState<SubmitStatus>({ state: "idle" });
   const requestIdRef = useRef(0);
+  const submitTimerRef = useRef<number | null>(null);
+
+  const clearSubmitStatus = useCallback(() => {
+    setSubmitStatus({ state: "idle" });
+  }, []);
+
+  const scheduleSubmitClear = useCallback((delayMs = 2500) => {
+    if (submitTimerRef.current) {
+      window.clearTimeout(submitTimerRef.current);
+    }
+    submitTimerRef.current = window.setTimeout(() => {
+      setSubmitStatus({ state: "idle" });
+      submitTimerRef.current = null;
+    }, delayMs);
+  }, []);
 
   // Subscribe to card list changes
   const cards = useSyncExternalStore(
@@ -24,6 +54,7 @@ export function useLifeStream(workspaceId: string | null) {
     streamStore.setDate(dateIso);
     const requestId = ++requestIdRef.current;
     setIsLoading(true);
+    setLoadError(null);
 
     try {
       const cards = await invoke<StreamCard[]>("life_stream_load_day", {
@@ -34,7 +65,11 @@ export function useLifeStream(workspaceId: string | null) {
         streamStore.loadCards(cards);
       }
     } catch (err) {
-      console.error("Failed to load day:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("Failed to load day:", message);
+      if (requestIdRef.current === requestId) {
+        setLoadError(message);
+      }
     } finally {
       if (requestIdRef.current === requestId) {
         setIsLoading(false);
@@ -43,16 +78,17 @@ export function useLifeStream(workspaceId: string | null) {
   }, [workspaceId]);
 
   // Submit new input
-  const submit = useCallback(async (input: string, occurredAtIso?: string) => {
+  const submit = useCallback(async (input: string, options?: SubmitOptions) => {
     if (!workspaceId) return;
 
     const cardId = crypto.randomUUID();
     const now = new Date().toISOString();
+    setSubmitStatus({ state: "sending", message: "Sending..." });
 
     // Optimistic: add pending card immediately
     const pendingCard: StreamCard = {
       id: cardId,
-      occurredAt: occurredAtIso ?? now,
+      occurredAt: options?.occurredAtIso ?? now,
       createdAt: now,
       updatedAt: now,
       version: 1,
@@ -64,6 +100,13 @@ export function useLifeStream(workspaceId: string | null) {
       processingSteps: ["Submitting..."],
       title: input.slice(0, 50) + (input.length > 50 ? "..." : ""),
       originalInput: input,
+      request: options
+        ? {
+            model: options.modelId ?? undefined,
+            effort: options.effort ?? undefined,
+            accessMode: options.accessMode ?? undefined,
+          }
+        : undefined,
     };
 
     streamStore.addCard(pendingCard);
@@ -73,10 +116,18 @@ export function useLifeStream(workspaceId: string | null) {
         workspaceId,
         cardId,
         input,
-        occurredAtIso,
+        occurredAtIso: options?.occurredAtIso,
+        modelId: options?.modelId ?? null,
+        effort: options?.effort ?? null,
+        accessMode: options?.accessMode ?? null,
+        collaborationMode: options?.collaborationMode ?? null,
       });
+      setSubmitStatus({ state: "received", message: "Message received" });
+      scheduleSubmitClear();
     } catch (err) {
-      streamStore.setCardError(cardId, String(err), 2);
+      const message = err instanceof Error ? err.message : String(err);
+      streamStore.setCardError(cardId, message, 2);
+      setSubmitStatus({ state: "error", message });
     }
   }, [workspaceId]);
 
@@ -178,8 +229,11 @@ export function useLifeStream(workspaceId: string | null) {
   return {
     cards,
     isLoading,
+    loadError,
     currentDate,
     submit,
+    submitStatus,
+    clearSubmitStatus,
     cancel,
     retry,
     clarify,

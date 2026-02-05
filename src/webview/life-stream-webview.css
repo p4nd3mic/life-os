@@ -1,0 +1,119 @@
+.app.life-webview {
+  grid-template-columns: 1fr;
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: var(--visual-viewport-height, 100dvh);
+  min-height: 100dvh;
+  touch-action: manipulation;
+  --main-panel-padding: 24px;
+}
+
+.app.life-webview .life-stream-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: var(--visual-viewport-height, 100dvh);
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  grid-column: 1 / -1;
+}
+
+.app.life-webview .life-stream-messages {
+  flex: 1;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.app.life-webview .life-stream-composer-area {
+  flex-shrink: 0;
+  padding-bottom: max(env(safe-area-inset-bottom), 0px);
+}
+
+.app.life-webview .life-stream-message-list {
+  --life-stream-rail-x: 50%;
+}
+
+.app.life-webview .life-stream-message-list::before,
+.app.life-webview .life-stream-message-list::after {
+  left: var(--life-stream-rail-x);
+  transform: translateX(-50%);
+}
+
+.app.life-webview .life-stream-now-marker__dot {
+  left: var(--life-stream-rail-x);
+  transform: translate(-50%, -50%);
+}
+
+.app.life-webview .life-stream-now-marker__label {
+  left: var(--life-stream-rail-x);
+  transform: translate(16px, -50%);
+}
+
+.app.life-webview .life-message-row {
+  justify-content: center;
+}
+
+.app.life-webview .life-message-row__card {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.app.life-webview .life-message-row.is-left .life-message-row__card {
+  justify-content: flex-start;
+  padding-right: clamp(96px, 14vw, 220px);
+}
+
+.app.life-webview .life-message-row.is-right .life-message-row__card {
+  justify-content: flex-end;
+  padding-left: clamp(96px, 14vw, 220px);
+}
+
+.app.life-webview .life-message-row__time {
+  left: var(--life-stream-rail-x, 50%);
+  transform: translateY(-50%);
+  margin-left: 0;
+  text-align: center;
+}
+
+.app.life-webview .life-message-row.is-left .life-message-row__time {
+  transform: translate(-100%, -50%);
+  margin-left: -20px;
+  text-align: right;
+}
+
+.app.life-webview .life-message-row.is-right .life-message-row__time {
+  transform: translate(0, -50%);
+  margin-left: 20px;
+  text-align: left;
+}
+
+.app.life-webview .life-message-row__dot {
+  left: var(--life-stream-rail-x, 50%);
+  transform: translate(-50%, -50%);
+}
+
+.app.life-webview .bubble.life-card-bubble {
+  max-width: min(720px, 44vw);
+}
+
+.app.life-webview .bubble.life-card-bubble.is-expanded {
+  max-width: min(920px, 48vw);
+}
+
+.app.life-webview .life-stream-header-controls .life-stream-filters__label {
+  display: inline;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  min-height: var(--visual-viewport-height, 100dvh);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}

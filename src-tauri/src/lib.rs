@@ -20,6 +20,7 @@ mod files;
 mod git;
 mod git_utils;
 mod life;
+mod life_stream;
 pub mod life_core;
 mod local_usage;
 mod local_usage_core;
@@ -154,6 +155,11 @@ pub fn run() {
             life::get_youtube_dashboard,
             life::enrich_media_covers,
             life::get_finance_dashboard,
+            life_stream::life_stream_load_day,
+            life_stream::life_stream_submit,
+            life_stream::life_stream_cancel,
+            life_stream::life_stream_retry,
+            life_stream::life_stream_clarify,
             prompts::prompts_global_dir,
             memory_commands::memory_status,
             memory_commands::memory_search,

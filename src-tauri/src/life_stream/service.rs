@@ -75,6 +75,7 @@ impl LifeStreamService {
         card_id: &str,
         input: &str,
         occurred_at: Option<&str>,
+        request: Option<CardRequestMeta>,
     ) -> Result<(), String> {
         let now = chrono::Utc::now().to_rfc3339();
         let occurred = occurred_at.unwrap_or(&now).to_string();
@@ -99,10 +100,13 @@ impl LifeStreamService {
             title: truncate(input, 50),
             subtitle: None,
             summary: None,
+            duration_ms: None,
             image: None,
             stats: None,
             entities: None,
             original_input: Some(input.to_string()),
+            assistant_preview: None,
+            request,
             source: None,
             expanded: None,
             clarification_options: None,
@@ -401,11 +405,21 @@ fn apply_patch_to_card(card: &mut StreamCard, patch: &StreamCardPatch) {
     if let Some(steps) = &patch.processing_steps {
         card.processing_steps = Some(steps.clone());
     }
+    if let Some(duration_ms) = patch.duration_ms {
+        card.duration_ms = Some(duration_ms);
+    }
     if let Some(error) = &patch.error_message {
         if error.is_empty() {
             card.error_message = None;
         } else {
             card.error_message = Some(error.clone());
+        }
+    }
+    if let Some(preview) = &patch.assistant_preview {
+        if preview.is_empty() {
+            card.assistant_preview = None;
+        } else {
+            card.assistant_preview = Some(preview.clone());
         }
     }
     if let Some(stats) = &patch.stats {
@@ -1312,6 +1326,7 @@ fn card_type_label(card_type: &CardType) -> &'static str {
     match card_type {
         CardType::Meal => "meal",
         CardType::DeliveryOrder => "delivery",
+        CardType::DeliverySession => "delivery_session",
         CardType::MediaAdd => "media",
         CardType::Music => "media",
         CardType::Thought => "thought",

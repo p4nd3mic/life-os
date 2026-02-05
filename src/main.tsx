@@ -1,7 +1,21 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import * as Sentry from "@sentry/react";
-import App from "./App";
+import "./styles/base.css";
+import "./styles/buttons.css";
+import "./styles/main.css";
+import "./styles/messages.css";
+import "./styles/composer.css";
+import "./styles/panel-tabs.css";
+import "./styles/approval-toasts.css";
+import "./styles/debug.css";
+import "./styles/compact-base.css";
+import "./styles/compact-tablet.css";
+import "./styles/compact-phone.css";
+import "./styles/request-user-input.css";
+import "./styles/tabbar.css";
+import "./features/life/styles/life-dashboard.css";
+import { LifeStreamWebApp } from "./webview/LifeStreamWebApp";
 
 const sentryDsn =
   import.meta.env.VITE_SENTRY_DSN ??
@@ -22,6 +36,6 @@ Sentry.metrics.count("app_open", 1, {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <LifeStreamWebApp />
   </React.StrictMode>,
 );

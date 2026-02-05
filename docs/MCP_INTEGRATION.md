@@ -14,6 +14,8 @@ This doc focuses on:
 
 There are *two* relevant registries:
 
+> **App Server is the primary harness.** MCP is used for tool execution and enrichment only. Core interactive flows (threads, turns, streaming UI events) should always go through the Codex app-server.
+
 ### 1) Rust-side whitelist (`ToolRegistry`)
 **File:** `CodexMonitor-lifeos/src-tauri/src/life_stream/mcp_registry.rs`
 

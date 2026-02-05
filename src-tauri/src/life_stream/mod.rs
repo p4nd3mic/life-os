@@ -53,6 +53,10 @@ pub async fn life_stream_submit(
     card_id: String,
     input: String,
     occurred_at_iso: Option<String>,
+    model_id: Option<String>,
+    effort: Option<String>,
+    access_mode: Option<String>,
+    collaboration_mode: Option<serde_json::Value>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
@@ -66,6 +70,10 @@ pub async fn life_stream_submit(
                 "cardId": card_id,
                 "input": input,
                 "occurredAtIso": occurred_at_iso,
+                "modelId": model_id,
+                "effort": effort,
+                "accessMode": access_mode,
+                "collaborationMode": collaboration_mode,
             }),
         )
         .await?;
@@ -77,6 +85,16 @@ pub async fn life_stream_submit(
     let obsidian_root = entry.settings.obsidian_root.as_deref();
 
     let life_stream = state.life_stream_service.lock().await;
+    let request = if model_id.is_some() || effort.is_some() || access_mode.is_some() {
+        Some(crate::life_stream::CardRequestMeta {
+            model: model_id,
+            effort,
+            access_mode,
+        })
+    } else {
+        None
+    };
+
     life_stream
         .submit(
             &workspace_id,
@@ -85,6 +103,7 @@ pub async fn life_stream_submit(
             &card_id,
             &input,
             occurred_at_iso.as_deref(),
+            request,
         )
         .await
 }

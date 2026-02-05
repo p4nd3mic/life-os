@@ -3,6 +3,8 @@ import * as Sentry from "@sentry/react";
 import type {
   ApprovalRequest,
   AppServerEvent,
+  AppServerItemDelta,
+  AppServerThread,
   ConversationItem,
   CustomPromptOption,
   DebugEntry,
@@ -759,6 +761,38 @@ export function useThreads({
     [onWorkspaceConnected, refreshAccountRateLimits],
   );
 
+  const handleThreadLifecycle = useCallback(
+    (
+      workspaceId: string,
+      threadId: string,
+      thread?: Record<string, unknown>,
+    ) => {
+      if (!threadId) {
+        return;
+      }
+      dispatch({ type: "ensureThread", workspaceId, threadId });
+      if (!thread) {
+        return;
+      }
+      applyCollabThreadLinksFromThread(threadId, thread);
+      const preview = asString(thread?.preview ?? thread?.title ?? thread?.name ?? "");
+      const customName = getCustomName(workspaceId, threadId);
+      if (!customName && preview) {
+        dispatch({
+          type: "setThreadName",
+          workspaceId,
+          threadId,
+          name: previewThreadName(preview, `Agent ${threadId.slice(0, 4)}`),
+        });
+      }
+      const timestamp = getThreadTimestamp(thread);
+      if (timestamp) {
+        dispatch({ type: "setThreadTimestamp", workspaceId, threadId, timestamp });
+      }
+    },
+    [applyCollabThreadLinksFromThread, getCustomName],
+  );
+
   const rememberApprovalPrefix = useCallback((workspaceId: string, command: string[]) => {
     const normalized = normalizeCommandTokens(command);
     if (!normalized.length) {
@@ -904,6 +938,13 @@ export function useThreads({
       ) => {
         dispatch({ type: "appendReasoningContent", threadId, itemId, delta });
       },
+      onItemDelta: (
+        _workspaceId: string,
+        threadId: string,
+        payload: AppServerItemDelta,
+      ) => {
+        handleToolOutputDelta(threadId, payload.itemId, payload.delta);
+      },
       onCommandOutputDelta: (
         _workspaceId: string,
         threadId: string,
@@ -1010,11 +1051,26 @@ export function useThreads({
         pushThreadErrorMessage(threadId, message);
         safeMessageActivity();
       },
+      onThreadStarted: (
+        workspaceId: string,
+        threadId: string,
+        thread?: AppServerThread,
+      ) => {
+        handleThreadLifecycle(workspaceId, threadId, thread);
+      },
+      onThreadCompleted: (
+        workspaceId: string,
+        threadId: string,
+        thread?: AppServerThread,
+      ) => {
+        handleThreadLifecycle(workspaceId, threadId, thread);
+      },
     }),
     [
       activeThreadId,
       getCustomName,
       handleWorkspaceConnected,
+      handleThreadLifecycle,
       handleItemUpdate,
       handleTerminalInteraction,
       handleToolOutputDelta,

@@ -203,7 +203,9 @@ Source of truth: `CodexMonitor-lifeos/src-tauri/src/lib.rs` → `tauri::generate
 
 ## Codex app-server RPC methods
 
-These are the JSON-RPC methods the Rust backend calls via `WorkspaceSession.send_request(...)` and `send_notification(...)`.
+These are the JSONL (JSON‑RPC‑lite) methods the Rust backend calls via `WorkspaceSession.send_request(...)` and `send_notification(...)`.
+
+**Handshake rule:** `initialize` **must** be sent once before any other request. The app enforces this and sends `initialized` after a successful response.
 
 ### Requests (client → app-server)
 
@@ -227,12 +229,31 @@ These are the JSON-RPC methods the Rust backend calls via `WorkspaceSession.send
 
 ### App-server → client events you must handle
 
-The app-server streams updates as event-like messages (not requests). The code explicitly expects at least:
-- `item/agentMessage/delta` (token streaming)
+The app-server streams updates as event-like messages (not requests). These are the core lifecycle events:
+
+**Thread lifecycle**
+- `thread/started`
+- `thread/completed`
+
+**Turn lifecycle**
+- `turn/started`
 - `turn/completed`
 - `turn/error`
+- `turn/plan/updated`
+- `turn/diff/updated`
 
-(There are more event methods in practice; these are the ones the current Rust streaming loop branches on.)
+**Item lifecycle**
+- `item/started`
+- `item/*/delta` (streaming deltas; e.g. `item/agentMessage/delta`)
+- `item/completed`
+
+**User input / approvals**
+- `item/tool/requestUserInput`
+- `workspace/requestApproval` (or similar `*/requestApproval`)
+
+**Client‑side debug events emitted by CodexMonitor**
+- `codex/version`
+- `codex/capabilities`
 
 ---
 

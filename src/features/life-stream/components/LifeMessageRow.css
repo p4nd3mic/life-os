@@ -1,0 +1,91 @@
+.life-message-row {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding: 12px 0 22px;
+  z-index: 1;
+}
+
+.life-message-row__card {
+  width: 100%;
+  display: flex;
+}
+
+.life-message-row.is-left .life-message-row__card {
+  justify-content: flex-start;
+  padding-right: clamp(96px, 14vw, 220px);
+}
+
+.life-message-row.is-right .life-message-row__card {
+  justify-content: flex-end;
+  padding-left: clamp(96px, 14vw, 220px);
+}
+
+.life-message-row__time {
+  position: absolute;
+  top: 22px;
+  left: var(--life-stream-rail-x, 50%);
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(8, 12, 20, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px);
+  transform: translateY(-50%);
+  white-space: nowrap;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.life-message-row.is-left .life-message-row__time {
+  transform: translate(-100%, -50%);
+  margin-left: -20px;
+  text-align: right;
+}
+
+.life-message-row.is-right .life-message-row__time {
+  transform: translate(0, -50%);
+  margin-left: 20px;
+  text-align: left;
+}
+
+.life-message-row__dot {
+  position: absolute;
+  top: 22px;
+  left: var(--life-stream-rail-x, 50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 2px solid rgba(12, 18, 28, 0.9);
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.08);
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  pointer-events: none;
+}
+
+@media (max-width: 900px) {
+  .life-message-row {
+    justify-content: flex-start;
+  }
+
+  .life-message-row__card {
+    padding-left: 48px;
+    padding-right: 0;
+    justify-content: flex-start !important;
+  }
+
+  .life-message-row__time {
+    left: 24px;
+    transform: translate(0, -50%);
+    margin-left: 12px;
+    text-align: left;
+  }
+
+  .life-message-row__dot {
+    left: 24px;
+  }
+}

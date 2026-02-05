@@ -1,0 +1,175 @@
+.life-stream-messages {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  margin-top: 0;
+  padding-top: calc(var(--main-topbar-height, 44px) + 12px);
+  width: 100%;
+  max-width: 100%;
+  align-self: stretch;
+}
+
+.life-stream-message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: none;
+  position: relative;
+  padding-bottom: 24px;
+  --life-stream-rail-x: 50%;
+}
+
+.life-stream-message-list::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--life-stream-rail-x);
+  width: 2px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.2) 0%,
+    rgba(255, 255, 255, 0.08) 40%,
+    rgba(255, 255, 255, 0.16) 100%
+  );
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.life-stream-message-list::after {
+  content: "";
+  position: absolute;
+  left: var(--life-stream-rail-x);
+  width: 2px;
+  height: 56px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.45) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 0;
+  animation: life-stream-rail-sweep 8s ease-in-out infinite;
+  opacity: 0.6;
+}
+
+.life-stream-now-marker {
+  position: relative;
+  min-height: 28px;
+  z-index: 1;
+}
+
+.life-stream-now-marker__dot {
+  position: absolute;
+  top: 50%;
+  left: var(--life-stream-rail-x);
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 2px solid rgba(12, 18, 28, 0.9);
+  box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.12);
+  transform: translate(-50%, -50%);
+  animation: life-stream-now-pulse 2.4s ease-in-out infinite;
+}
+
+.life-stream-now-marker__label {
+  position: absolute;
+  top: 50%;
+  left: var(--life-stream-rail-x);
+  transform: translate(16px, -50%);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-primary);
+  background: rgba(8, 12, 20, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+@keyframes life-stream-now-pulse {
+  0% {
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.12);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(255, 255, 255, 0.04);
+  }
+  100% {
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.12);
+  }
+}
+
+@keyframes life-stream-rail-sweep {
+  0% {
+    top: -80px;
+  }
+  100% {
+    top: 100%;
+  }
+}
+
+@media (max-width: 900px) {
+  .life-stream-message-list::before {
+    left: 24px;
+    transform: none;
+  }
+
+  .life-stream-message-list {
+    --life-stream-rail-x: 24px;
+  }
+
+  .life-stream-now-marker__label {
+    transform: translate(12px, -50%);
+  }
+}
+
+.app.life-mode .life-stream-messages {
+  width: 100%;
+  max-width: none;
+}
+
+.life-stream-loading,
+.life-stream-empty {
+  padding: 24px var(--main-panel-padding);
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
+
+.life-stream-error-banner {
+  margin: 12px var(--main-panel-padding) 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: rgba(255, 170, 170, 0.95);
+  font-size: 0.85rem;
+}
+
+.life-stream-log-controls {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px var(--main-panel-padding) 0;
+}
+
+.life-stream-log-toggle {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.9);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.life-stream-log-toggle:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+}

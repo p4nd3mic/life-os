@@ -7,6 +7,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::auto_flush::AutoMemoryRuntime;
 use crate::dictation::DictationState;
+use crate::life_stream::LifeStreamService;
 use crate::memory::MemoryService;
 use crate::storage::{
     read_domains, read_settings, read_workspaces, seed_domains_from_files, write_domains,
@@ -26,6 +27,7 @@ pub(crate) struct AppState {
     pub(crate) dictation: Mutex<DictationState>,
     pub(crate) memory: RwLock<Option<MemoryService>>,
     pub(crate) auto_memory_runtime: Mutex<AutoMemoryRuntime>,
+    pub(crate) life_stream_service: Mutex<LifeStreamService>,
 }
 
 impl AppState {
@@ -64,6 +66,13 @@ impl AppState {
         } else {
             None
         };
+        let tmdb_key = if app_settings.tmdb_api_key.is_empty() {
+            None
+        } else {
+            Some(app_settings.tmdb_api_key.clone())
+        };
+        let mut life_stream_service = LifeStreamService::new(None, tmdb_key);
+        life_stream_service.set_emitter(app.clone());
 
         Self {
             workspaces: Mutex::new(workspaces),
@@ -78,6 +87,7 @@ impl AppState {
             dictation: Mutex::new(DictationState::default()),
             memory: RwLock::new(memory),
             auto_memory_runtime: Mutex::new(AutoMemoryRuntime::default()),
+            life_stream_service: Mutex::new(life_stream_service),
         }
     }
 }

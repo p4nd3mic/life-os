@@ -10,6 +10,7 @@ type UseModelsOptions = {
 };
 
 const pickDefaultModel = (models: ModelOption[]) =>
+  models.find((model) => model.model === "gpt-5.3-codex") ??
   models.find((model) => model.model === "gpt-5.2-codex") ??
   models.find((model) => model.isDefault) ??
   models[0] ??

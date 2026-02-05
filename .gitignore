@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-webview
 *.local
 
 # Editor directories and files
@@ -17,6 +18,8 @@ dist-ssr
 !.vscode/extensions.json
 .idea
 .DS_Store
+ios/CodexMonitorMobile/CodexMonitorMobile/WebView/*
+!ios/CodexMonitorMobile/CodexMonitorMobile/WebView/.gitkeep
 *.suo
 *.ntvs*
 *.njsproj

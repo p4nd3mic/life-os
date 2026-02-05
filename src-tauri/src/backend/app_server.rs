@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::env;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,11 +29,24 @@ pub(crate) struct WorkspaceSession {
     pub(crate) stdin: Mutex<ChildStdin>,
     pub(crate) pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     pub(crate) next_id: AtomicU64,
+    pub(crate) initialized: AtomicBool,
+    pub(crate) capabilities: Mutex<Option<Value>>,
     /// Callbacks for background threads - events for these threadIds are sent through the channel
     pub(crate) background_thread_callbacks: Mutex<HashMap<String, mpsc::UnboundedSender<Value>>>,
 }
 
 impl WorkspaceSession {
+    fn ensure_initialized(&self, method: &str) -> Result<(), String> {
+        let initialized = self.initialized.load(Ordering::SeqCst);
+        if !initialized && method != "initialize" {
+            return Err("Codex app-server not initialized. Call initialize first.".to_string());
+        }
+        if initialized && method == "initialize" {
+            return Err("Codex app-server already initialized.".to_string());
+        }
+        Ok(())
+    }
+
     async fn write_message(&self, value: Value) -> Result<(), String> {
         let mut stdin = self.stdin.lock().await;
         let mut line = serde_json::to_string(&value).map_err(|e| e.to_string())?;
@@ -45,6 +58,7 @@ impl WorkspaceSession {
     }
 
     pub(crate) async fn send_request(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.ensure_initialized(method)?;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
@@ -58,6 +72,9 @@ impl WorkspaceSession {
         method: &str,
         params: Option<Value>,
     ) -> Result<(), String> {
+        if method != "initialized" {
+            self.ensure_initialized(method)?;
+        }
         let value = if let Some(params) = params {
             json!({ "method": method, "params": params })
         } else {
@@ -69,6 +86,14 @@ impl WorkspaceSession {
     pub(crate) async fn send_response(&self, id: Value, result: Value) -> Result<(), String> {
         self.write_message(json!({ "id": id, "result": result }))
             .await
+    }
+
+    pub(crate) async fn mark_initialized(&self, capabilities: Option<Value>) {
+        if let Some(value) = capabilities {
+            let mut guard = self.capabilities.lock().await;
+            *guard = Some(value);
+        }
+        self.initialized.store(true, Ordering::SeqCst);
     }
 }
 
@@ -138,7 +163,7 @@ pub(crate) fn build_codex_command_with_bin(codex_bin: Option<String>) -> Command
 pub(crate) async fn check_codex_installation(
     codex_bin: Option<String>,
 ) -> Result<Option<String>, String> {
-    let mut command = build_codex_command_with_bin(codex_bin);
+    let mut command = build_codex_command_with_bin(codex_bin.clone());
     command.arg("--version");
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -198,9 +223,9 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
         .clone()
         .filter(|value| !value.trim().is_empty())
         .or(default_codex_bin);
-    let _ = check_codex_installation(codex_bin.clone()).await?;
+    let codex_version = check_codex_installation(codex_bin.clone()).await?;
 
-    let mut command = build_codex_command_with_bin(codex_bin);
+    let mut command = build_codex_command_with_bin(codex_bin.clone());
     crate::codex_args::apply_codex_args(&mut command, codex_args.as_deref())?;
     command.current_dir(&entry.path);
     command.arg("app-server");
@@ -222,6 +247,8 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
         stdin: Mutex::new(stdin),
         pending: Mutex::new(HashMap::new()),
         next_id: AtomicU64::new(1),
+        initialized: AtomicBool::new(false),
+        capabilities: Mutex::new(None),
         background_thread_callbacks: Mutex::new(HashMap::new()),
     });
 
@@ -347,7 +374,40 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
             );
         }
     };
-    init_response?;
+    let init_payload = init_response?;
+    let capabilities = init_payload
+        .get("result")
+        .and_then(|value| value.get("capabilities"))
+        .cloned();
+    session.mark_initialized(capabilities.clone()).await;
+    if let Some(version) = codex_version.clone() {
+        eprintln!(
+            "[app-server] codex version={} bin={}",
+            version,
+            codex_bin.clone().unwrap_or_else(|| "codex".to_string())
+        );
+        let payload = AppServerEvent {
+            workspace_id: entry.id.clone(),
+            message: json!({
+                "method": "codex/version",
+                "params": {
+                    "version": version,
+                    "binary": codex_bin.clone().unwrap_or_else(|| "codex".to_string()),
+                }
+            }),
+        };
+        event_sink.emit_app_server_event(payload);
+    }
+    if let Some(capabilities) = capabilities {
+        let payload = AppServerEvent {
+            workspace_id: entry.id.clone(),
+            message: json!({
+                "method": "codex/capabilities",
+                "params": { "capabilities": capabilities }
+            }),
+        };
+        event_sink.emit_app_server_event(payload);
+    }
     session.send_notification("initialized", None).await?;
 
     let payload = AppServerEvent {

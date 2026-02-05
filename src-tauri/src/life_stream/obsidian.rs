@@ -1,10 +1,15 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use tokio::fs;
 
 use super::service::EnrichedData;
-use super::types::{CardImage, CardState, CardType, DomainId, LifeStreamError, StreamCard};
+use super::types::{
+    CardImage, CardState, CardType, DomainId, ExpandedContent, ExpandedSection, LifeStreamError,
+    StreamCard,
+};
 
 #[derive(Clone)]
 pub struct ObsidianIO {
@@ -233,18 +238,70 @@ fn append_card_entry(
 }
 
 fn parse_cards_from_stream(content: &str, date: NaiveDate, stream_file: &Path) -> Vec<StreamCard> {
-    let mut cards = Vec::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut entries = Vec::new();
+    let mut notes_by_id: HashMap<String, NotePayload> = HashMap::new();
     let mut current_date: Option<NaiveDate> = None;
-    for line in content.lines() {
+    let mut index = 0;
+
+    while index < lines.len() {
+        let line = lines[index];
         if let Some(parsed) = parse_header_date(line, date.year()) {
             current_date = Some(parsed);
+            index += 1;
             continue;
         }
+
         if current_date != Some(date) {
+            index += 1;
             continue;
         }
+
+        if line.trim().starts_with("## ") {
+            break;
+        }
+
         if let Some(entry) = parse_table_entry(line, date) {
-            cards.push(StreamCard {
+            entries.push(entry);
+            index += 1;
+            continue;
+        }
+
+        if let Some(note_id) = parse_note_marker(line) {
+            index += 1;
+            let mut block_lines = Vec::new();
+            while index < lines.len() {
+                let next = lines[index];
+                if next.trim().starts_with("<!--note:") || next.trim().starts_with("## ") {
+                    break;
+                }
+                block_lines.push(next.to_string());
+                index += 1;
+            }
+            notes_by_id.insert(note_id, parse_note_payload(&block_lines));
+            continue;
+        }
+
+        index += 1;
+    }
+
+    entries
+        .into_iter()
+        .map(|entry| {
+            let note = notes_by_id.get(&entry.task_id).cloned().unwrap_or_default();
+            let response_text = note.response_text();
+            let summary = note.summary_text();
+            let expanded = response_text.as_ref().map(|response| ExpandedContent {
+                original_input: note.prompt.clone(),
+                sections: vec![ExpandedSection {
+                    title: "Codex Response".to_string(),
+                    body: response.to_string(),
+                }],
+                entity_links: None,
+                actions: Vec::new(),
+            });
+
+            StreamCard {
                 id: entry.task_id.clone(),
                 occurred_at: entry.occurred_at.clone(),
                 created_at: entry.occurred_at.clone(),
@@ -258,7 +315,8 @@ fn parse_cards_from_stream(content: &str, date: NaiveDate, stream_file: &Path) -
                 processing_steps: None,
                 title: entry.title.clone(),
                 subtitle: None,
-                summary: None,
+                summary,
+                duration_ms: note.duration_ms,
                 image: Some(CardImage {
                     url: None,
                     status: super::types::ImageStatus::Missing,
@@ -266,18 +324,107 @@ fn parse_cards_from_stream(content: &str, date: NaiveDate, stream_file: &Path) -
                 }),
                 stats: None,
                 entities: None,
-                original_input: None,
+                original_input: note.prompt,
+                assistant_preview: None,
+                request: None,
                 source: Some(super::types::CardSource {
                     stream_file: Some(stream_file.to_string_lossy().to_string()),
                     stream_anchor: Some(entry.task_id.clone()),
                 }),
-                expanded: None,
+                expanded,
                 clarification_options: None,
                 error_message: None,
-            });
-        }
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct NotePayload {
+    prompt: Option<String>,
+    response: Option<String>,
+    body: Option<String>,
+    duration_ms: Option<u64>,
+}
+
+impl NotePayload {
+    fn response_text(&self) -> Option<String> {
+        self.response
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
     }
-    cards
+
+    fn summary_text(&self) -> Option<String> {
+        self.body
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| self.response_text())
+    }
+}
+
+fn parse_note_marker(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    trimmed
+        .strip_prefix("<!--note:")
+        .and_then(|value| value.strip_suffix("-->"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_note_payload(lines: &[String]) -> NotePayload {
+    let mut payload = NotePayload::default();
+    let mut body_lines: Vec<String> = Vec::new();
+
+    for line in lines {
+        let trimmed = line.trim();
+        if let Some((key, value)) = parse_comment_key_value(trimmed) {
+            match key {
+                "prompt_b64" => payload.prompt = decode_b64(value),
+                "response_b64" => payload.response = decode_b64(value),
+                "prompt" => payload.prompt = Some(value.to_string()),
+                "response" => payload.response = Some(value.to_string()),
+                "duration_ms" => payload.duration_ms = value.parse::<u64>().ok(),
+                _ => {}
+            }
+            continue;
+        }
+
+        if trimmed == "---" && body_lines.is_empty() {
+            continue;
+        }
+        body_lines.push(line.to_string());
+    }
+
+    while body_lines
+        .last()
+        .map(|line| line.trim())
+        .is_some_and(|line| line.is_empty() || line == "---")
+    {
+        body_lines.pop();
+    }
+
+    let body = body_lines.join("\n").trim().to_string();
+    if !body.is_empty() {
+        payload.body = Some(body);
+    }
+
+    payload
+}
+
+fn parse_comment_key_value(line: &str) -> Option<(&str, &str)> {
+    let inner = line.strip_prefix("<!--")?.strip_suffix("-->")?;
+    let (key, value) = inner.split_once(':')?;
+    Some((key.trim(), value.trim()))
+}
+
+fn decode_b64(value: &str) -> Option<String> {
+    let decoded = BASE64_STANDARD.decode(value).ok()?;
+    String::from_utf8(decoded)
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
 }
 
 #[derive(Debug, PartialEq)]
@@ -378,4 +525,56 @@ pub(crate) fn normalize_time(value: &str) -> Option<String> {
         hour = 0;
     }
     Some(format!("{:02}:{:02}", hour, minute))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_table_entries_with_note_payload_metadata() {
+        let content = r#"
+# February 2026
+
+## Mon Feb 02
+| Plan | Actual | Delta |
+|------|--------|---|
+| -- | 06:37  | + | <!--task:2026-02-02-0637-test-->
+| -- | 07:53 running test | + | <!--task:2026-02-02-0753-test-->
+---
+<!--note:2026-02-02-0637-test-->
+<!--prompt_b64:SGVsbG8gd29ybGQ=-->
+<!--response_b64:VGhpcyBpcyBhIHJlc3BvbnNlLg==-->
+<!--duration_ms:1234-->
+This is a response.
+---
+<!--note:2026-02-02-0753-test-->
+<!--prompt_b64:VGVzdCBpbnB1dA==-->
+Logged entry.
+
+## Tue Feb 03
+| Plan | Actual | Delta |
+|------|--------|---|
+"#;
+
+        let date = NaiveDate::from_ymd_opt(2026, 2, 2).expect("valid date");
+        let cards = parse_cards_from_stream(content, date, Path::new("/vault/Stream/2026-02.md"));
+        assert_eq!(cards.len(), 2);
+
+        let first = &cards[0];
+        assert_eq!(first.id, "2026-02-02-0637-test");
+        assert_eq!(first.original_input.as_deref(), Some("Hello world"));
+        assert_eq!(first.duration_ms, Some(1234));
+        assert_eq!(first.summary.as_deref(), Some("This is a response."));
+        let expanded = first.expanded.as_ref().expect("expanded response section");
+        assert_eq!(expanded.sections.len(), 1);
+        assert_eq!(expanded.sections[0].title, "Codex Response");
+        assert_eq!(expanded.sections[0].body, "This is a response.");
+
+        let second = &cards[1];
+        assert_eq!(second.id, "2026-02-02-0753-test");
+        assert_eq!(second.original_input.as_deref(), Some("Test input"));
+        assert_eq!(second.summary.as_deref(), Some("Logged entry."));
+        assert!(second.expanded.is_none());
+    }
 }

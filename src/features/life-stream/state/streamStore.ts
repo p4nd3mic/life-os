@@ -8,6 +8,8 @@ class StreamStore {
   private cardListeners: Map<string, Set<CardListener>> = new Map();
   private globalListeners: Set<Listener> = new Set();
   private currentDate: string = new Date().toISOString().split("T")[0];
+  private snapshot: StreamCard[] = [];
+  private snapshotDirty = true;
 
   // Global subscription (for CardList)
   subscribe(listener: Listener): () => void {
@@ -33,9 +35,32 @@ class StreamStore {
   }
 
   getSnapshot(): StreamCard[] {
-    return Array.from(this.cards.values())
-      .filter((card) => card.occurredAt.startsWith(this.currentDate))
-      .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
+    if (this.snapshotDirty) {
+      this.snapshot = Array.from(this.cards.values())
+        .filter((card) => {
+          const dateKey =
+            card.occurredAt ||
+            card.createdAt ||
+            card.updatedAt ||
+            "";
+          return dateKey.startsWith(this.currentDate);
+        })
+        .sort((a, b) => {
+          const aKey =
+            a.occurredAt ||
+            a.createdAt ||
+            a.updatedAt ||
+            "";
+          const bKey =
+            b.occurredAt ||
+            b.createdAt ||
+            b.updatedAt ||
+            "";
+          return bKey.localeCompare(aKey);
+        });
+      this.snapshotDirty = false;
+    }
+    return this.snapshot;
   }
 
   getCardIds(): string[] {
@@ -53,19 +78,32 @@ class StreamStore {
   // Actions
   setDate(dateIso: string): void {
     this.currentDate = dateIso;
+    this.snapshotDirty = true;
     this.notifyGlobal();
   }
 
   loadCards(cards: StreamCard[]): void {
     this.cards.clear();
     for (const card of cards) {
-      this.cards.set(card.id, card);
+      const occurredAt =
+        card.occurredAt ||
+        card.createdAt ||
+        card.updatedAt ||
+        new Date().toISOString();
+      this.cards.set(card.id, { ...card, occurredAt });
     }
+    this.snapshotDirty = true;
     this.notifyGlobal();
   }
 
   addCard(card: StreamCard): void {
-    this.cards.set(card.id, card);
+    const occurredAt =
+      card.occurredAt ||
+      card.createdAt ||
+      card.updatedAt ||
+      new Date().toISOString();
+    this.cards.set(card.id, { ...card, occurredAt });
+    this.snapshotDirty = true;
     this.notifyGlobal();
   }
 
@@ -89,8 +127,14 @@ class StreamStore {
     if (patch.processingSteps) {
       updated.processingSteps = patch.processingSteps;
     }
+    if (patch.durationMs !== undefined) {
+      updated.durationMs = patch.durationMs;
+    }
     if (patch.errorMessage !== undefined) {
       updated.errorMessage = patch.errorMessage || undefined;
+    }
+    if (patch.assistantPreview !== undefined) {
+      updated.assistantPreview = patch.assistantPreview || undefined;
     }
     if (patch.stats) {
       updated.stats = patch.stats;
@@ -107,6 +151,8 @@ class StreamStore {
     }
 
     this.cards.set(cardId, updated);
+    this.snapshotDirty = true;
+    this.notifyGlobal();
     this.notifyCard(cardId);
   }
 
@@ -123,6 +169,8 @@ class StreamStore {
       version: newVersion,
     };
     this.cards.set(cardId, updated);
+    this.snapshotDirty = true;
+    this.notifyGlobal();
     this.notifyCard(cardId);
   }
 
@@ -131,6 +179,8 @@ class StreamStore {
     if (existing && card.version <= existing.version) return;
 
     this.cards.set(card.id, card);
+    this.snapshotDirty = true;
+    this.notifyGlobal();
     this.notifyCard(card.id);
   }
 
@@ -146,6 +196,8 @@ class StreamStore {
       version: newVersion,
     };
     this.cards.set(cardId, updated);
+    this.snapshotDirty = true;
+    this.notifyGlobal();
     this.notifyCard(cardId);
   }
 

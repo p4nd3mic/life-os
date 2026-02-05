@@ -90,16 +90,72 @@
 }
 
 .life-stream-card-expanded__title {
-  font-size: 0.7rem;
+  font-size: 0.9rem;
+  font-weight: 760;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--life-text-muted);
+  color: var(--life-expanded-title-color, #8fbfff);
 }
 
 .life-stream-card-expanded__body {
   font-size: 0.9rem;
-  color: var(--life-text-secondary);
+  color: var(--life-arctic-body, #d7e9ff);
+  opacity: 1;
   white-space: pre-wrap;
+  line-height: 1.42;
+}
+
+.life-stream-card-expanded__body.markdown,
+.life-stream-card-expanded__body.markdown * {
+  color: var(--life-arctic-body, #d7e9ff);
+  opacity: 1;
+}
+
+.life-stream-card-expanded__body.markdown {
+  white-space: normal;
+  line-height: 1.46;
+  letter-spacing: 0.004em;
+}
+
+.life-stream-card-expanded__body.markdown > * + * {
+  margin-top: 0.16rem;
+}
+
+.life-stream-card-expanded__body.markdown p {
+  margin: 0.08rem 0;
+}
+
+.life-stream-card-expanded__body.markdown ul,
+.life-stream-card-expanded__body.markdown ol {
+  padding-left: 1.15rem;
+  margin: 0.16rem 0;
+}
+
+.life-stream-card-expanded__body.markdown li {
+  margin: 0.08rem 0;
+}
+
+.life-stream-card-expanded__body.markdown li + li {
+  margin-top: 0.1rem;
+}
+
+.life-stream-card-expanded__body.markdown br + br {
+  display: none;
+}
+
+.life-stream-card-expanded__body.markdown strong,
+.life-stream-card-expanded__body.markdown b {
+  color: var(--life-expanded-strong-color, #eaf2ff);
+  font-size: 1.04em;
+  font-weight: 700;
+}
+
+.life-stream-card-expanded__body p,
+.life-stream-card-expanded__body li,
+.life-stream-card-expanded__body strong,
+.life-stream-card-expanded__body em,
+.life-stream-card-expanded__body code {
+  color: inherit;
 }
 
 .life-stream-card-expanded__body.is-mono {

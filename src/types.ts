@@ -40,9 +40,42 @@ export type WorkspaceInfo = {
   settings: WorkspaceSettings;
 };
 
+export type AppServerEventMessage = {
+  method?: string;
+  params?: Record<string, unknown>;
+  id?: string | number;
+  [key: string]: unknown;
+};
+
 export type AppServerEvent = {
   workspace_id: string;
-  message: Record<string, unknown>;
+  message: AppServerEventMessage;
+};
+
+export type AppServerThread = Record<string, unknown> & {
+  id: string;
+  turns?: unknown[];
+  preview?: string;
+  updatedAt?: string | number;
+};
+
+export type AppServerTurn = Record<string, unknown> & {
+  id: string;
+  threadId?: string;
+  items?: unknown[];
+};
+
+export type AppServerItem = Record<string, unknown> & {
+  id: string;
+  type: string;
+};
+
+export type AppServerItemDelta = {
+  method: string;
+  threadId: string;
+  itemId: string;
+  delta: string;
+  itemType?: string | null;
 };
 
 export type Message = {

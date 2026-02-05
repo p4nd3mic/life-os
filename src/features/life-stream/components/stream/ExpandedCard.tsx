@@ -1,4 +1,6 @@
 import type { CardAction, ExpandedSection, StreamCard } from "../../types";
+import { Markdown } from "../../../messages/components/Markdown";
+import { normalizeStructuredMarkdown } from "../../utils/markdownNormalize";
 import "./StreamCardExtras.css";
 
 type ExpandedCardProps = {
@@ -11,7 +13,10 @@ function renderSection(section: ExpandedSection) {
   return (
     <div key={section.title} className="life-stream-card-expanded__section">
       <div className="life-stream-card-expanded__title">{section.title}</div>
-      <div className="life-stream-card-expanded__body">{section.body}</div>
+      <Markdown
+        value={normalizeStructuredMarkdown(section.body)}
+        className="markdown life-stream-card-expanded__body"
+      />
     </div>
   );
 }

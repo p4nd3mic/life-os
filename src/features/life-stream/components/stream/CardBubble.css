@@ -1,0 +1,396 @@
+.bubble.life-card-bubble {
+  --life-arctic-body: #c9def7;
+  --life-arctic-header: #f2f8ff;
+  --life-arctic-label: #8fbfff;
+  --life-arctic-accent: #5ea8ff;
+  --life-expanded-title-color: var(--life-arctic-label);
+  --life-expanded-strong-color: var(--life-arctic-header);
+  background: linear-gradient(
+    180deg,
+    rgba(30, 34, 44, 0.85) 0%,
+    rgba(20, 24, 32, 0.9) 100%
+  );
+  border: 1px solid var(--glass-border);
+  border-left: 3px solid var(--life-card-accent, var(--border-accent));
+  border-radius: 16px;
+  padding: 14px 16px;
+  max-width: min(720px, 44vw);
+  width: 100%;
+  box-shadow:
+    0 0 0 1px var(--border-accent-soft),
+    var(--glass-shadow-soft);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.bubble.life-card-bubble:hover {
+  box-shadow:
+    0 0 0 1px var(--border-accent),
+    0 10px 26px rgba(0, 0, 0, 0.35);
+}
+
+.bubble.life-card-bubble.is-expanded {
+  max-width: min(920px, 48vw);
+  box-shadow:
+    0 0 0 1px var(--border-accent),
+    0 14px 30px rgba(0, 0, 0, 0.4);
+}
+
+@media (max-width: 900px) {
+  .bubble.life-card-bubble {
+    max-width: min(860px, 90vw);
+  }
+
+  .bubble.life-card-bubble.is-expanded {
+    max-width: min(980px, 94vw);
+  }
+}
+
+.life-card-bubble__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.life-card-bubble__meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.life-card-bubble__title {
+  font-size: 17px;
+  font-weight: 760;
+  color: var(--life-arctic-header);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.2;
+}
+
+.life-card-bubble__subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.life-card-bubble__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.life-card-bubble__badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.life-card-bubble__badge.is-model {
+  color: var(--text-accent);
+  border-color: var(--border-accent-soft);
+  background: rgba(106, 166, 255, 0.08);
+}
+
+.life-card-bubble__badge.is-effort {
+  color: var(--text-stronger);
+  border-color: var(--border-muted);
+}
+
+.life-card-bubble__time {
+  font-size: 11px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.life-card-bubble__expand {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.life-card-bubble__image {
+  margin-bottom: 10px;
+}
+
+.life-card-bubble__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.life-card-bubble__label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--life-arctic-label);
+}
+
+.life-card-bubble__text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--life-arctic-body);
+  white-space: pre-wrap;
+}
+
+.life-card-bubble__markdown {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--life-arctic-body);
+}
+
+.life-card-bubble__markdown.markdown {
+  font-size: 13px;
+  line-height: 1.44;
+  letter-spacing: 0.004em;
+}
+
+.life-card-bubble__markdown.markdown h1,
+.life-card-bubble__markdown.markdown h2,
+.life-card-bubble__markdown.markdown h3,
+.life-card-bubble__markdown.markdown h4 {
+  color: var(--life-arctic-header);
+  font-weight: 760;
+  line-height: 1.2;
+}
+
+.life-card-bubble__markdown.markdown h1 { font-size: 1.36em; }
+.life-card-bubble__markdown.markdown h2 { font-size: 1.28em; }
+.life-card-bubble__markdown.markdown h3 { font-size: 1.2em; }
+.life-card-bubble__markdown.markdown h4 { font-size: 1.14em; }
+
+.life-card-bubble__markdown.markdown > * + * {
+  margin-top: 0.16rem;
+}
+
+.life-card-bubble__markdown.markdown p {
+  margin: 0.06rem 0;
+}
+
+.life-card-bubble__markdown.markdown ul,
+.life-card-bubble__markdown.markdown ol {
+  padding-left: 1.15rem;
+}
+
+.life-card-bubble__markdown.markdown li {
+  margin: 0.1rem 0;
+}
+
+.life-card-bubble__markdown.markdown strong,
+.life-card-bubble__markdown.markdown b {
+  color: var(--life-arctic-header);
+  font-weight: 700;
+  font-size: 1.04em;
+}
+
+.life-card-bubble__preview {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-card);
+}
+
+.life-card-bubble__preview-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.life-card-bubble__preview-text {
+  font-size: 12px;
+  color: var(--life-arctic-body);
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.life-card-bubble__ascii {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font-family: "SFMono-Regular", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.life-card-bubble__highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.life-card-bubble__highlight {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-stronger);
+}
+
+.life-card-bubble__highlight-label {
+  font-size: 10px;
+  color: var(--life-arctic-label);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.life-card-bubble__highlight-value {
+  font-weight: 600;
+}
+
+.life-card-bubble__summary {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--life-arctic-body);
+  margin-bottom: 8px;
+}
+
+.life-card-bubble__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.life-card-bubble__stat {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--surface-card-strong);
+  color: var(--text-stronger);
+}
+
+.life-card-bubble__entities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.life-card-bubble__entity {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--surface-card);
+  border: 1px solid rgba(94, 168, 255, 0.42);
+  color: var(--life-arctic-accent);
+}
+
+.life-card-bubble__clarification {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px dashed var(--border-muted);
+  background: var(--surface-card);
+}
+
+.life-card-bubble__clarification-message {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.life-card-bubble__clarification-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.life-card-bubble__clarification-option {
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-item);
+  color: var(--text-stronger);
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.life-card-bubble__error {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 110, 110, 0.15);
+  color: var(--status-error);
+  font-size: 12px;
+}
+
+.life-card-bubble__actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.life-card-bubble__action {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.life-card-bubble__action.is-primary {
+  background: var(--surface-bubble);
+  border-color: var(--border-accent);
+  color: var(--text-strong);
+}
+
+.bubble.life-card-bubble.domain-nutrition {
+  --life-card-accent: #4ade80;
+}
+
+.bubble.life-card-bubble.domain-delivery {
+  --life-card-accent: #fb923c;
+}
+
+.bubble.life-card-bubble.domain-media {
+  --life-card-accent: #a78bfa;
+}
+
+.bubble.life-card-bubble.domain-youtube {
+  --life-card-accent: #f472b6;
+}
+
+.bubble.life-card-bubble.domain-finance {
+  --life-card-accent: #facc15;
+}
+
+.bubble.life-card-bubble.domain-fitness {
+  --life-card-accent: #2dd4bf;
+}
+
+.bubble.life-card-bubble.domain-general {
+  --life-card-accent: #60a5fa;
+}
+
+.life-card-bubble .life-stream-processing {
+  margin-top: 6px;
+}

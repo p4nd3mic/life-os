@@ -11,6 +11,7 @@ export type CardState =
 export type CardType =
   | "meal"
   | "delivery_order"
+  | "delivery_session"
   | "media_add"
   | "music"
   | "thought"
@@ -68,6 +69,12 @@ export type CardImage = {
 
 export type CardStatValue = string | number | boolean | null;
 
+export type CardRequestMeta = {
+  model?: string;
+  effort?: string;
+  accessMode?: string;
+};
+
 export type EntityLink = {
   name: string;
   path: string;
@@ -99,6 +106,7 @@ export type StreamCard = {
   title: string;
   subtitle?: string;
   summary?: string;
+  durationMs?: number;
 
   image?: CardImage;
 
@@ -106,6 +114,9 @@ export type StreamCard = {
   entities?: EntityRef[];
 
   originalInput?: string;
+
+  assistantPreview?: string;
+  request?: CardRequestMeta;
 
   source?: {
     streamFile?: string;
@@ -124,7 +135,9 @@ export type StreamCardPatch = {
   subtitle?: string;
   processingStep?: string;
   processingSteps?: string[];
+  durationMs?: number;
   errorMessage?: string;
+  assistantPreview?: string;
   stats?: Record<string, CardStatValue>;
   image?: CardImage;
   expanded?: ExpandedContent;

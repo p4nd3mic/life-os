@@ -548,6 +548,10 @@ export async function getModelList(workspaceId: string) {
   return invoke<any>("model_list", { workspaceId });
 }
 
+export async function readLifeStreamLog(workspaceId: string, limit = 200) {
+  return invoke<string[]>("life_stream_read_log", { workspaceId, limit });
+}
+
 export async function getCollaborationModes(workspaceId: string) {
   return invoke<any>("collaboration_mode_list", { workspaceId });
 }

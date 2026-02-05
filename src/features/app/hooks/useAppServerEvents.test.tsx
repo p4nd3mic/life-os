@@ -54,6 +54,8 @@ describe("useAppServerEvents", () => {
       onApprovalRequest: vi.fn(),
       onItemCompleted: vi.fn(),
       onAgentMessageCompleted: vi.fn(),
+      onThreadStarted: vi.fn(),
+      onItemDelta: vi.fn(),
     };
     const { root } = await mount(handlers);
 
@@ -78,6 +80,38 @@ describe("useAppServerEvents", () => {
       threadId: "thread-1",
       itemId: "item-1",
       delta: "Hello",
+    });
+
+    act(() => {
+      listener?.({
+        workspace_id: "ws-1",
+        message: {
+          method: "thread/started",
+          params: { threadId: "thread-1", thread: { id: "thread-1" } },
+        },
+      });
+    });
+    expect(handlers.onThreadStarted).toHaveBeenCalledWith(
+      "ws-1",
+      "thread-1",
+      { id: "thread-1" },
+    );
+
+    act(() => {
+      listener?.({
+        workspace_id: "ws-1",
+        message: {
+          method: "item/analysis/delta",
+          params: { threadId: "thread-1", itemId: "item-3", delta: "Partial..." },
+        },
+      });
+    });
+    expect(handlers.onItemDelta).toHaveBeenCalledWith("ws-1", "thread-1", {
+      method: "item/analysis/delta",
+      threadId: "thread-1",
+      itemId: "item-3",
+      delta: "Partial...",
+      itemType: "analysis",
     });
 
     act(() => {

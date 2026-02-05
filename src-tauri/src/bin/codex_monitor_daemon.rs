@@ -17,6 +17,8 @@ mod codex_params;
 mod git_utils;
 #[path = "../life_core.rs"]
 mod life;
+#[path = "../life_stream/daemon.rs"]
+mod life_stream;
 #[path = "../local_usage_core.rs"]
 mod local_usage_core;
 #[path = "../memory/mod.rs"]
@@ -37,7 +39,8 @@ mod utils;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -66,6 +69,7 @@ use backend::app_server::{spawn_workspace_session, WorkspaceSession};
 use backend::events::{AppServerEvent, EventSink, TerminalOutput};
 use browser::service::BrowserService;
 use codex_params::{build_turn_start_params, build_user_input};
+use life_stream::{LifeStreamEvent, LifeStreamService};
 use git_utils::{
     checkout_branch, commit_to_entry, diff_patch_to_string, diff_stats_for_path,
     list_git_roots as scan_git_roots, parse_github_repo, resolve_git_root,
@@ -87,6 +91,7 @@ use utils::normalize_git_path;
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:4732";
 const INDEX_SKIP_WORKTREE_FLAG: u16 = 0x4000;
+const MAX_LIFE_STREAM_LOG_LINES: usize = 500;
 
 #[derive(Clone)]
 struct DaemonEventSink {
@@ -98,6 +103,7 @@ enum DaemonEvent {
     AppServer(AppServerEvent),
     #[allow(dead_code)]
     TerminalOutput(TerminalOutput),
+    LifeStream(LifeStreamEvent),
 }
 
 impl EventSink for DaemonEventSink {
@@ -129,6 +135,8 @@ struct DaemonState {
     memory: RwLock<Option<MemoryService>>,
     auto_memory_runtime: Mutex<AutoMemoryRuntime>,
     browser: BrowserService,
+    life_stream_service: Mutex<LifeStreamService>,
+    life_stream_log: Arc<Mutex<VecDeque<String>>>,
     event_sink: DaemonEventSink,
 }
 
@@ -143,6 +151,12 @@ struct TextFileResponse {
     exists: bool,
     content: String,
     truncated: bool,
+}
+
+#[derive(Serialize)]
+struct LifeStreamAssetResponse {
+    base64: String,
+    mime: String,
 }
 
 struct TerminalSession {
@@ -201,6 +215,26 @@ impl DaemonState {
         } else {
             None
         };
+        let tmdb_key = resolve_api_key(app_settings.tmdb_api_key.as_str(), "TMDB_API_KEY");
+        let life_stream_log: Arc<Mutex<VecDeque<String>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
+        let mut life_stream_service = LifeStreamService::new(None, tmdb_key);
+        let log_sink = life_stream_log.clone();
+        let event_sink_clone = event_sink.clone();
+        life_stream_service.set_event_sink(move |event| {
+            let _ = event_sink_clone
+                .tx
+                .send(DaemonEvent::LifeStream(event.clone()));
+            let log_entry = format!("{:?}", event);
+            let log_sink = log_sink.clone();
+            task::spawn(async move {
+                let mut logs = log_sink.lock().await;
+                logs.push_back(log_entry);
+                while logs.len() > MAX_LIFE_STREAM_LOG_LINES {
+                    logs.pop_front();
+                }
+            });
+        });
         Self {
             data_dir: config.data_dir.clone(),
             workspaces: Mutex::new(workspaces),
@@ -214,6 +248,8 @@ impl DaemonState {
             memory: RwLock::new(memory),
             auto_memory_runtime: Mutex::new(AutoMemoryRuntime::default()),
             browser: BrowserService::new(),
+            life_stream_service: Mutex::new(life_stream_service),
+            life_stream_log,
             event_sink,
         }
     }
@@ -1229,6 +1265,166 @@ impl DaemonState {
         serde_json::to_value(dashboard).map_err(|err| err.to_string())
     }
 
+    async fn life_stream_load_day(
+        &self,
+        workspace_id: String,
+        date_iso: String,
+    ) -> Result<Value, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+        let obsidian_root = entry.settings.obsidian_root.as_deref();
+        let life_stream = self.life_stream_service.lock().await;
+        let cards = life_stream
+            .load_day(&entry.path, obsidian_root, &date_iso)
+            .await?;
+        serde_json::to_value(cards).map_err(|err| err.to_string())
+    }
+
+    async fn life_stream_submit(
+        &self,
+        workspace_id: String,
+        card_id: String,
+        input: String,
+        occurred_at: Option<String>,
+        model_id: Option<String>,
+        effort: Option<String>,
+        access_mode: Option<String>,
+    ) -> Result<Value, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+        let obsidian_root = entry.settings.obsidian_root.as_deref();
+        let request = if model_id.is_some() || effort.is_some() || access_mode.is_some() {
+            Some(life_stream::CardRequestMeta {
+                model: model_id,
+                effort,
+                access_mode,
+            })
+        } else {
+            None
+        };
+        let life_stream = self.life_stream_service.lock().await;
+        life_stream
+            .submit(
+                &workspace_id,
+                &entry.path,
+                obsidian_root,
+                &card_id,
+                &input,
+                occurred_at.as_deref(),
+                request,
+            )
+            .await?;
+        Ok(json!({ "ok": true }))
+    }
+
+    async fn life_stream_cancel(
+        &self,
+        _workspace_id: String,
+        card_id: String,
+    ) -> Result<Value, String> {
+        let life_stream = self.life_stream_service.lock().await;
+        life_stream.cancel(&card_id).await?;
+        Ok(json!({ "ok": true }))
+    }
+
+    async fn life_stream_retry(
+        &self,
+        workspace_id: String,
+        card_id: String,
+    ) -> Result<Value, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+        let obsidian_root = entry.settings.obsidian_root.as_deref();
+        let life_stream = self.life_stream_service.lock().await;
+        life_stream
+            .retry(&workspace_id, &entry.path, obsidian_root, &card_id)
+            .await?;
+        Ok(json!({ "ok": true }))
+    }
+
+    async fn life_stream_clarify(
+        &self,
+        workspace_id: String,
+        card_id: String,
+        option_id: String,
+    ) -> Result<Value, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+        let obsidian_root = entry.settings.obsidian_root.as_deref();
+        let life_stream = self.life_stream_service.lock().await;
+        life_stream
+            .resume_with_clarification(
+                &workspace_id,
+                &entry.path,
+                obsidian_root,
+                &card_id,
+                &option_id,
+            )
+            .await?;
+        Ok(json!({ "ok": true }))
+    }
+
+    async fn life_stream_read_log(
+        &self,
+        _workspace_id: String,
+        limit: usize,
+    ) -> Result<Value, String> {
+        let logs = self.life_stream_log.lock().await;
+        let total = logs.len();
+        let start = total.saturating_sub(limit);
+        let slice: Vec<String> = logs.iter().skip(start).cloned().collect();
+        serde_json::to_value(slice).map_err(|err| err.to_string())
+    }
+
+    async fn life_stream_read_asset(
+        &self,
+        workspace_id: String,
+        path: String,
+    ) -> Result<Value, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+        let root = entry
+            .settings
+            .obsidian_root
+            .clone()
+            .ok_or("obsidian_root not configured")?;
+        let root = PathBuf::from(root);
+        let resolved = resolve_life_stream_asset_path(&root, &path)?;
+        let data = tokio::fs::read(&resolved)
+            .await
+            .map_err(|err| format!("Failed to read asset: {err}"))?;
+        let response = LifeStreamAssetResponse {
+            base64: STANDARD.encode(data),
+            mime: guess_mime_type(&resolved).to_string(),
+        };
+        serde_json::to_value(response).map_err(|err| err.to_string())
+    }
+
     async fn start_thread(&self, workspace_id: String) -> Result<Value, String> {
         let session = self.get_session(&workspace_id).await?;
         let is_life = {
@@ -1776,6 +1972,40 @@ fn read_workspace_file_inner(
 
     let content = String::from_utf8(buffer).map_err(|_| "File is not valid UTF-8".to_string())?;
     Ok(WorkspaceFileResponse { content, truncated })
+}
+
+fn resolve_life_stream_asset_path(root: &PathBuf, raw_path: &str) -> Result<PathBuf, String> {
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|err| format!("Failed to resolve vault root: {err}"))?;
+    let candidate = PathBuf::from(raw_path);
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        canonical_root.join(candidate)
+    };
+    let canonical_path = candidate
+        .canonicalize()
+        .map_err(|err| format!("Failed to resolve asset path: {err}"))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err("Invalid asset path".to_string());
+    }
+    Ok(canonical_path)
+}
+
+fn guess_mime_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => match ext.to_lowercase().as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            "tif" | "tiff" => "image/tiff",
+            _ => "application/octet-stream",
+        },
+        None => "application/octet-stream",
+    }
 }
 
 fn read_global_file_inner(filename: &str) -> Result<TextFileResponse, String> {
@@ -4590,6 +4820,10 @@ fn build_event_notification(event: DaemonEvent) -> Option<String> {
             "method": "terminal-output",
             "params": payload,
         }),
+        DaemonEvent::LifeStream(payload) => json!({
+            "method": "life_stream_event",
+            "params": payload,
+        }),
     };
     serde_json::to_string(&payload).ok()
 }
@@ -5059,6 +5293,60 @@ async fn handle_rpc_request(
         "get_life_workspace_prompt" => {
             let prompt = state.get_life_workspace_prompt().await?;
             serde_json::to_value(prompt).map_err(|err| err.to_string())
+        }
+        "life_stream_load_day" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let date_iso = parse_string(&params, "dateIso")?;
+            state.life_stream_load_day(workspace_id, date_iso).await
+        }
+        "life_stream_submit" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let card_id = parse_string(&params, "cardId")?;
+            let input = parse_string(&params, "input")?;
+            let occurred_at = parse_optional_string(&params, "occurredAtIso");
+            let model_id = parse_optional_string(&params, "modelId");
+            let effort = parse_optional_string(&params, "effort");
+            let access_mode = parse_optional_string(&params, "accessMode");
+            let _collaboration_mode = parse_optional_value(&params, "collaborationMode");
+            state
+                .life_stream_submit(
+                    workspace_id,
+                    card_id,
+                    input,
+                    occurred_at,
+                    model_id,
+                    effort,
+                    access_mode,
+                )
+                .await
+        }
+        "life_stream_cancel" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let card_id = parse_string(&params, "cardId")?;
+            state.life_stream_cancel(workspace_id, card_id).await
+        }
+        "life_stream_retry" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let card_id = parse_string(&params, "cardId")?;
+            state.life_stream_retry(workspace_id, card_id).await
+        }
+        "life_stream_clarify" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let card_id = parse_string(&params, "cardId")?;
+            let option_id = parse_string(&params, "optionId")?;
+            state
+                .life_stream_clarify(workspace_id, card_id, option_id)
+                .await
+        }
+        "life_stream_read_log" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let limit = parse_optional_usize(&params, "limit").unwrap_or(200);
+            state.life_stream_read_log(workspace_id, limit).await
+        }
+        "life_stream_read_asset" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let path = parse_string(&params, "path")?;
+            state.life_stream_read_asset(workspace_id, path).await
         }
         "get_delivery_dashboard" => {
             let workspace_id = parse_string(&params, "workspaceId")?;

@@ -39,7 +39,12 @@ export function CardImage({
   const showUploadAction = status === "upload_prompt" && Boolean(onRequestUpload);
   const resolvedSrc = useMemo(() => {
     if (!image?.url) return "";
-    if (image.url.startsWith("http") || image.url.startsWith("tauri://") || image.url.startsWith("asset://")) {
+    if (
+      image.url.startsWith("http") ||
+      image.url.startsWith("tauri://") ||
+      image.url.startsWith("asset://") ||
+      image.url.startsWith("codex://")
+    ) {
       return image.url;
     }
     return convertFileSrc(image.url);
