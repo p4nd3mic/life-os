@@ -13,10 +13,22 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: CodexMonitorMobile
+    resources:
+      - path: CodexMonitorMobile/WebView
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.codexmonitor.mobile
         INFOPLIST_FILE: CodexMonitorMobile/Info.plist
+    preBuildScripts:
+      - name: Copy WebView bundle
+        script: |
+          WEBVIEW_SRC="${SRCROOT}/../..//dist-webview"
+          WEBVIEW_DST="${SRCROOT}/CodexMonitorMobile/WebView"
+          if [ -d "$WEBVIEW_SRC" ]; then
+            mkdir -p "$WEBVIEW_DST"
+            rsync -a --delete "$WEBVIEW_SRC"/ "$WEBVIEW_DST"/
+          fi
+        shell: /bin/sh
     dependencies:
       - package: CodexMonitorRPC
         product: CodexMonitorRPC

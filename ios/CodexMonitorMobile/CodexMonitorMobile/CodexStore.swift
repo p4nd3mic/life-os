@@ -80,6 +80,8 @@ final class CodexStore: ObservableObject {
     @Published var collaborationModesByWorkspace: [String: [CollaborationModeOption]] = [:]
     @Published var selectedCollaborationModeIdByWorkspace: [String: String?] = [:]
 
+    var lifeStreamEventHandler: ((LifeStreamEvent) -> Void)?
+
     private var inFlightByThread: [String: QueuedMessage?] = [:]
     private var hasStartedByThread: [String: Bool] = [:]
 
@@ -317,6 +319,57 @@ final class CodexStore: ObservableObject {
             dashboardError = error.localizedDescription
         }
         dashboardLoading = false
+    }
+
+    // MARK: - Life Stream RPC
+    func lifeStreamLoadDay(workspaceId: String, dateIso: String) async throws -> [StreamCard] {
+        return try await api.lifeStreamLoadDay(workspaceId: workspaceId, dateIso: dateIso)
+    }
+
+    func lifeStreamSubmit(
+        workspaceId: String,
+        cardId: String,
+        input: String,
+        occurredAtIso: String? = nil,
+        modelId: String? = nil,
+        effort: String? = nil,
+        accessMode: String? = nil,
+        collaborationMode: JSONValue? = nil
+    ) async throws {
+        try await api.lifeStreamSubmit(
+            workspaceId: workspaceId,
+            cardId: cardId,
+            input: input,
+            occurredAtIso: occurredAtIso,
+            modelId: modelId,
+            effort: effort,
+            accessMode: accessMode,
+            collaborationMode: collaborationMode
+        )
+    }
+
+    func lifeStreamCancel(workspaceId: String, cardId: String) async throws {
+        try await api.lifeStreamCancel(workspaceId: workspaceId, cardId: cardId)
+    }
+
+    func lifeStreamRetry(workspaceId: String, cardId: String) async throws {
+        try await api.lifeStreamRetry(workspaceId: workspaceId, cardId: cardId)
+    }
+
+    func lifeStreamClarify(workspaceId: String, cardId: String, optionId: String) async throws {
+        try await api.lifeStreamClarify(workspaceId: workspaceId, cardId: cardId, optionId: optionId)
+    }
+
+    func lifeStreamReadLog(workspaceId: String, limit: Int = 200) async throws -> [String] {
+        return try await api.lifeStreamReadLog(workspaceId: workspaceId, limit: limit)
+    }
+
+    func lifeStreamReadAsset(workspaceId: String, path: String) async throws -> LifeStreamAssetResponse {
+        return try await api.lifeStreamReadAsset(workspaceId: workspaceId, path: path)
+    }
+
+    func callRaw(method: String, params: JSONValue? = nil) async throws -> JSONValue {
+        return try await api.rpc.call(method: method, params: params)
     }
 
     func addWorkspace(path: String, codexBin: String?) async {
@@ -938,6 +991,11 @@ final class CodexStore: ObservableObject {
             if let params = notification.params,
                let event = try? params.decode(TerminalOutputEvent.self) {
                 handleTerminalOutput(event)
+            }
+        case "life_stream_event":
+            if let params = notification.params,
+               let event = try? params.decode(LifeStreamEvent.self) {
+                lifeStreamEventHandler?(event)
             }
         default:
             break

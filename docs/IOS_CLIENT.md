@@ -73,10 +73,44 @@ flowchart LR
 The app chooses a layout based on device type:
 
 - **Phone:** `TabView` with sections (Projects, Domain, Codex, Memory, Git, Debug Log, Browser, Skills)
-- **iPad/tablet:** a split layout (`TabletLayoutView`) with a sidebar + detail pane
+- **iPad/tablet:** **full-screen Life Stream WebView** (desktop‑identical UI)
 
 Root router:
 - `ios/CodexMonitorMobile/CodexMonitorMobile/Views/RootView.swift`
+
+### iPad WebView shell (desktop parity)
+
+On iPad, the app renders the **desktop Life Stream React UI** inside a WKWebView:
+
+- View: `Views/LifeStreamWebView.swift`
+- Entry HTML: `index.webview.html`
+- Bundle assets: `ios/CodexMonitorMobile/CodexMonitorMobile/WebView/`
+
+**Key hardening details:**
+- `preferredContentMode = .desktop` to force desktop layout.
+- Safe‑area handling via CSS (`env(safe-area-inset-*)`) to keep the top bar + composer aligned.
+- Visual viewport height tracked to keep composer visible when the keyboard opens.
+- Scroll bounce disabled to match desktop behavior.
+
+### Local build + iPad mini simulator (justfile)
+
+From the repo root:
+
+```bash
+just app-ipad
+```
+
+This will:
+- build the WebView bundle (`npm run build:webview`)
+- boot the **iPad mini** simulator
+- build + install the iOS app
+- launch the app on the simulator
+
+You can also run both desktop + iPad in one command:
+
+```bash
+just app
+```
 
 ---
 

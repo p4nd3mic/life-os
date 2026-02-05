@@ -11,7 +11,7 @@ struct RootView: View {
             if horizontalSizeClass == .compact {
                 PhoneRootView(showSettings: $showSettings)
             } else {
-                TabletRootView(showSettings: $showSettings)
+                LifeStreamShellView(showSettings: $showSettings)
             }
         }
         .sheet(isPresented: $showSettings) {
@@ -144,6 +144,25 @@ private struct PhoneRootView: View {
             }
         }
         .modifier(GlassTabBarStyle())
+    }
+}
+
+private struct LifeStreamShellView: View {
+    @Binding var showSettings: Bool
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            LifeStreamWebView()
+                .ignoresSafeArea()
+
+            Button(action: { showSettings = true }) {
+                Image(systemName: "gearshape")
+                    .padding(10)
+            }
+            .background(.ultraThinMaterial, in: Circle())
+            .padding(16)
+            .accessibilityLabel("Settings")
+        }
     }
 }
 

@@ -240,6 +240,101 @@ public struct CodexMonitorAPI: Sendable {
         )
     }
 
+    // MARK: - Life Stream
+    public func lifeStreamLoadDay(workspaceId: String, dateIso: String) async throws -> [StreamCard] {
+        return try await call(
+            "life_stream_load_day",
+            params: .object([
+                "workspaceId": .string(workspaceId),
+                "dateIso": .string(dateIso),
+            ]),
+            as: [StreamCard].self
+        )
+    }
+
+    public func lifeStreamSubmit(
+        workspaceId: String,
+        cardId: String,
+        input: String,
+        occurredAtIso: String? = nil,
+        modelId: String? = nil,
+        effort: String? = nil,
+        accessMode: String? = nil,
+        collaborationMode: JSONValue? = nil
+    ) async throws {
+        var params: [String: JSONValue] = [
+            "workspaceId": .string(workspaceId),
+            "cardId": .string(cardId),
+            "input": .string(input),
+        ]
+        if let occurredAtIso { params["occurredAtIso"] = .string(occurredAtIso) }
+        if let modelId { params["modelId"] = .string(modelId) }
+        if let effort { params["effort"] = .string(effort) }
+        if let accessMode { params["accessMode"] = .string(accessMode) }
+        if let collaborationMode { params["collaborationMode"] = collaborationMode }
+        try await callVoid("life_stream_submit", params: .object(params))
+    }
+
+    public func lifeStreamCancel(workspaceId: String, cardId: String) async throws {
+        try await callVoid(
+            "life_stream_cancel",
+            params: .object([
+                "workspaceId": .string(workspaceId),
+                "cardId": .string(cardId),
+            ])
+        )
+    }
+
+    public func lifeStreamRetry(workspaceId: String, cardId: String) async throws {
+        try await callVoid(
+            "life_stream_retry",
+            params: .object([
+                "workspaceId": .string(workspaceId),
+                "cardId": .string(cardId),
+            ])
+        )
+    }
+
+    public func lifeStreamClarify(
+        workspaceId: String,
+        cardId: String,
+        optionId: String
+    ) async throws {
+        try await callVoid(
+            "life_stream_clarify",
+            params: .object([
+                "workspaceId": .string(workspaceId),
+                "cardId": .string(cardId),
+                "optionId": .string(optionId),
+            ])
+        )
+    }
+
+    public func lifeStreamReadLog(workspaceId: String, limit: Int = 200) async throws -> [String] {
+        return try await call(
+            "life_stream_read_log",
+            params: .object([
+                "workspaceId": .string(workspaceId),
+                "limit": .number(Double(limit)),
+            ]),
+            as: [String].self
+        )
+    }
+
+    public func lifeStreamReadAsset(
+        workspaceId: String,
+        path: String
+    ) async throws -> LifeStreamAssetResponse {
+        return try await call(
+            "life_stream_read_asset",
+            params: .object([
+                "workspaceId": .string(workspaceId),
+                "path": .string(path),
+            ]),
+            as: LifeStreamAssetResponse.self
+        )
+    }
+
     // MARK: - Memory
     public func memoryStatus() async throws -> MemoryStatus {
         return try await call("memory_status", as: MemoryStatus.self)
