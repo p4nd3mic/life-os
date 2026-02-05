@@ -194,6 +194,31 @@ If you can reproduce, add a regression test in:
 
 ---
 
+### Desktop opens the wrong UI (old multi-workspace shell vs Life Stream shell)
+
+Symptoms:
+- app launches, but shows legacy multi-workspace layout
+- missing day navigation / timeline card stream / Life composer
+
+Most likely cause:
+- desktop entrypoint drifted (`src/main.tsx`) to a different root than intended for current lane
+
+Checks:
+1) Confirm branch lane:
+   - `codex/desktop-stable` for known-good desktop
+   - `codex/ipad-webview-wip` for iPad WebView iteration
+2) Confirm entrypoint in `src/main.tsx` matches the lane intent.
+3) Rebuild from root with:
+   ```bash
+   just app
+   ```
+
+Notes:
+- Keep desktop fixes and iPad WebView work separated by branch to avoid shell crossover.
+- See **[BRANCH_LANES.md](BRANCH_LANES.md)** for lane mapping.
+
+---
+
 ### Cards not rendering / stream view empty
 
 Checks:

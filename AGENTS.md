@@ -2,57 +2,128 @@
 **Keep in sync with:** `~/.claude/CLAUDE.md`
 **Exceptions:** This sync rule, Parallelization section (Claude Code only)
 
----
+# 🖥️ CodexMonitor-lifeos (Life OS Desktop App)
 
-# 🖥️ CodexMonitor Project
-
-**Path:** `/Volumes/YouTube 4TB/CodexMonitor`
+**Root:** `/Volumes/YouTube 4TB/CodexMonitor-lifeos`
+**Repo:** https://github.com/p4nd3mic/life-os
+**Tech:** Tauri + React + Rust
 
 ## What It Is
-CodexMonitor is a multi-client UI for driving **Codex `app-server`** sessions. It provides Desktop (Tauri+React), iOS/iPadOS (SwiftUI), and a Rust daemon for remote access.
+A desktop app that runs a Life Stream UI. User input becomes **cards**, which are:
+- decided by Codex app-server (LLM)
+- optionally enriched by MCP tool calls
+- persisted to the Obsidian vault
+- updated in UI via Tauri events
 
-## Why It Exists
-Run Codex from iPhone/iPad while away from Mac. The daemon runs on Mac Mini, iOS app connects over Tailscale.
+## Key Files (Read First)
+| File | Purpose |
+|------|---------|
+| `src-tauri/src/life_stream/service.rs` | Decision engine + orchestration |
+| `src-tauri/src/life_stream/mcp_registry.rs` | Tool whitelist + prompt list |
+| `src-tauri/src/life_stream/mcp_bridge.rs` | MCP stdio bridge to Node |
+| `src-tauri/src/life_stream/types.rs` | Rust card types + patches |
+| `src/features/life-stream/components/stream/CardBubble.tsx` | Card rendering |
+| `src/features/life-stream/utils/cardHighlights.ts` | Highlight chips |
+| `src/features/life-stream/hooks/useLifeStream.ts` | Invoke + event listener bridge |
+| `src/features/life-stream/state/streamStore.ts` | Store + patching |
+| `src/types.ts` | Shared UI types (workspaces/domains) |
 
-## Architecture Summary
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  iOS App    │────▶│   Daemon    │────▶│ codex       │
-│  (SwiftUI)  │ TCP │   (Rust)    │     │ app-server  │
-└─────────────┘     └─────────────┘     └─────────────┘
-                           ▲
-┌─────────────┐            │
-│ Desktop App │────────────┘ (local or remote mode)
-│ (Tauri+React)│
-└─────────────┘
-```
+## Tauri Event Channels
+- `life_stream_event`
+- `app_server_event`
+- `open_file`
 
-## Key Paths
-| Component | Path |
-|-----------|------|
-| Daemon | `src-tauri/src/bin/codex_monitor_daemon.rs` |
-| iOS Store | `ios/CodexMonitorMobile/CodexMonitorMobile/CodexStore.swift` |
-| Swift Models | `ios/Packages/CodexMonitorRPC/Sources/CodexMonitorModels/Models.swift` |
-| Desktop Types | `src/types.ts` |
-| Rust Types | `src-tauri/src/types.rs` |
+## Mode Behavior
+In current repo, `src/App.tsx` sets `lifeOsMode = true` (Life Stream is always-on).
 
-## Documentation (in `docs/`)
-| Doc | Purpose |
-|-----|---------|
-| `ARCHITECTURE.md` | System design, data flow, components |
-| `API_REFERENCE.md` | All RPC methods with examples |
-| `DATA_MODELS.md` | Cross-platform type definitions |
-| `IOS_CLIENT.md` | Swift packages, CodexStore, views |
-| `DESKTOP_APP.md` | React components, hooks, Tauri commands |
-| `DAEMON_INTERNALS.md` | Rust daemon modules, Codex integration |
-| `DEPLOYMENT.md` | Mac Mini setup, Tailscale, launchd |
-| `AGENTS.md` | Quick reference for AI agents |
+## Commands
+- `just app` — build release bundle *without signing* + open app (preferred for “build and open”).
+- `just app-dev` — open dev mode (hot reload).
+- `just app-ipad` — build WebView bundle + run iPad mini simulator app.
+
+## Auto-Run Build Rule
+- After **any code edits**, automatically invoke **lifeos-maintain** in **BUILD** mode (pkill + verify `codex-monitor`, then `just app`).
+- For any request like “build”, “run app”, or “just app”, use **lifeos-maintain BUILD** only (do not use app-run).
+- Skip only when user says **“skip build”** or **“don’t run app.”**
+  - **Important:** `lifeos-maintain` is a **Codex skill**, not a shell command. **Never** run `lifeos-maintain` in the terminal.
+## Optional Shortcut
+- **app-run** remains available as a manual, single-purpose build shortcut.
+
+## Branch Lanes (Current Working Convention)
+- `codex/desktop-stable` → **desktop-known-good** checkpoint (commit: `a35d193`).
+- `codex/ipad-webview-wip` → **iPad WebView experiment** checkpoint (commit: `8463a83`).
+- `feature/life-os-main-rebuild` → integration lane tracking `life-os/feature/life-os-main-rebuild`.
+
+Use these lanes to avoid mixing desktop stabilization with iPad WebView iteration.
+
+
+---
+
+## life-mcp (MCP Server)
+
+**Root:** `/Volumes/YouTube 4TB/code/_archive/life-mcp`
+**Tech:** Node.js + MCP SDK
+
+### What It Is
+A Model Context Protocol server exposing many "Life OS" tools:
+- delivery logging + advisor
+- nutrition logging
+- finance logging
+- media / youtube logging + enrichment
+- tasks + analysis
+- meta registry tools (list/search/execute)
+
+### Key Files
+| File | Purpose |
+|------|---------|
+| `index.js` | Node entrypoint |
+| `src/server/mcp.js` | MCP server setup + tool registration |
+| `src/tool-registry.js` | Categories + keyword index + registry |
+| `src/tools/*.js` | Tool implementations |
+| `src/supabase/` | DB integration |
+| `src/clients/` | External API clients (TMDB, etc) |
+
+### Categories (Node Registry)
+delivery, advisor, nutrition, finance, youtube, media, creators, tasks, analysis, agents, goals, relationships, inbox, notes, knowledge, rewards, digest, meta
+
+### High-Frequency Tool Behavior
+In stdio mode, MCP registers meta tools + high-frequency subset. To access non-registered tools, use `execute_tool`.
+
+---
+
+## life-os (System Root)
+
+**Root:** `/Volumes/YouTube 4TB/code/life-os`
+
+Config root for system definitions:
+- `systems/*.yaml` — domain schemas/config
+- `justfile` — command runner
+
+---
 
 ## Critical Gotchas
-- **Mixed JSON naming**: some fields `snake_case`, some `camelCase` - don't normalize
-- **Codex responses nested**: many RPC methods return `result.result`
-- **iOS always requires auth**: won't connect to `--insecure-no-auth` daemon
-- **Update ALL types together**: TS + Swift + Rust when changing models
+- **Rust ↔ TS casing**: structs are camelCase, enums often snake_case
+- **Tool availability**: depends on both Node "registered" set and Rust whitelist
+- **Nested result.result**: response shapes exist; unwrap logic is defensive
+- **LIFE_OS_PATH**: must be set correctly for life-mcp
+- **Timezone boundaries**: can shift "today" if not Pacific/local aligned
+- **Stream file metadata**: uses HTML comments; manual edits can break parsing
+- **Types must stay in sync**:
+  - TS: `src/features/life-stream/types.ts`
+  - Rust: `src-tauri/src/life_stream/types.rs`
+
+## Documentation
+**Reference:** `ARCHITECTURE.md`, `API_REFERENCE.md`, `MCP_INTEGRATION.md`, `GOTCHAS.md`
+**Operations:** `DEPLOYMENT.md`, `TESTING.md`, `TROUBLESHOOTING.md`
+
+All docs in `/Volumes/YouTube 4TB/CodexMonitor-lifeos/docs/`
+
+### Legacy Projects (Reference Only)
+| Project | Path | Status |
+|---------|------|--------|
+| CodexMonitor (original) | `/Volumes/YouTube 4TB/CodexMonitor` | Deprecated - OpenAI released official Codex app |
+| life-chat | `/Volumes/YouTube 4TB/code/life-os/apps/life-chat` | Legacy iOS chat client |
+| life-os (monorepo) | `/Volumes/YouTube 4TB/code/life-os` | Contains legacy apps and configs |
 
 ---
 
@@ -61,28 +132,7 @@ Run Codex from iPhone/iPad while away from Mac. The daemon runs on Mac Mini, iOS
 
 ---
 
-## Workflow Skills
 
-For multi-step coding tasks:
-
-| Skill | When to Use |
-|-------|-------------|
-| `/plan` | Starting features, brainstorm → plan file |
-| `/execute` | Run plan with parallel Task agents |
-| `/review` | Build + test + verify quality |
-| `/debug` | Systematic debugging |
-
-**Flow:** `/plan` → `/execute` → `/review`
-
-**Parallel by default.** Quality checks at meaningful checkpoints.
-
----
-
-## Web Search
-
-All web searches must use **EXA MCP tools**.
-
----
 
 ## Obsidian Vault
 

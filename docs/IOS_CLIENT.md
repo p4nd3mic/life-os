@@ -106,11 +106,14 @@ This will:
 - build + install the iOS app
 - launch the app on the simulator
 
-You can also run both desktop + iPad in one command:
+Desktop build/open command:
 
 ```bash
 just app
 ```
+
+> Note: `just app` is **desktop-only** (kill existing process, build release app, open desktop app).  
+> iPad simulation is run with `just app-ipad`.
 
 ---
 
@@ -236,7 +239,7 @@ These dashboards call daemon RPC methods like:
 - `get_exercise_dashboard`
 - …
 
-> The **Life Stream card UI** is primarily a desktop feature. Mobile focuses on dashboards + remote control.
+> Current behavior: iPad uses the desktop-identical Life Stream WebView shell; phone keeps the native tab experience.
 
 ### 3) Git + terminal (remote control)
 - Run shell commands on the Mac daemon side

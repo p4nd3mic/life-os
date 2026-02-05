@@ -205,3 +205,4 @@ Because tools can return JSON in multiple formats, the parser supports:
 - [MCP_INTEGRATION.md](MCP_INTEGRATION.md)
 - [LIFE_STREAM.md](LIFE_STREAM.md)
 - [GOTCHAS.md](GOTCHAS.md)
+- [BRANCH_LANES.md](BRANCH_LANES.md)
