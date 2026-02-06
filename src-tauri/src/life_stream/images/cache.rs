@@ -23,7 +23,10 @@ impl ImageCache {
             .join(&safe_name)
             .join("cover.jpg");
 
-        if path.components().any(|component| component == std::path::Component::ParentDir) {
+        if path
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+        {
             return Err("Path traversal attempt detected".to_string());
         }
 
@@ -54,9 +57,9 @@ impl ImageCache {
         entity_name: &str,
         data: &[u8],
     ) -> Result<PathBuf, std::io::Error> {
-        let path = self.cache_path(card_type, entity_name).map_err(|err| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, err)
-        })?;
+        let path = self
+            .cache_path(card_type, entity_name)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;

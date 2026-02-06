@@ -9,7 +9,8 @@ IOS_BUNDLE_ID := "com.codexmonitor.mobile"
 
 default: app
 
-# Build + open desktop app (no signing). iPad sim handled manually via MCP when needed.
+# Build + open desktop app (dev-signed for stable macOS file permissions).
+# iPad sim handled manually via MCP when needed.
 app: app-desktop
 
 app-desktop:
@@ -17,6 +18,7 @@ app-desktop:
   for i in {1..25}; do pgrep -x codex-monitor >/dev/null || break; sleep 0.2; done
   pgrep -x codex-monitor >/dev/null && pkill -9 -x codex-monitor || true
   npm run doctor:strict && npx tauri build --bundles app
+  scripts/sign-dev-app.sh "src-tauri/target/release/bundle/macos/CodexMonitor.app"
   open "src-tauri/target/release/bundle/macos/CodexMonitor.app"
 
 app-ipad:

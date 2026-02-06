@@ -8,6 +8,7 @@
   width: 100%;
   max-width: 100%;
   align-self: stretch;
+  scroll-padding-bottom: 180px;
 }
 
 .life-stream-message-list {
@@ -17,8 +18,13 @@
   width: 100%;
   max-width: none;
   position: relative;
-  padding-bottom: 24px;
-  --life-stream-rail-x: 50%;
+  padding-bottom: clamp(32px, 6vh, 88px);
+  --life-stream-rail-x: 30px;
+}
+
+.life-stream-message-list--cause-effect {
+  --life-stream-rail-x: 28px;
+  gap: 10px;
 }
 
 .life-stream-message-list::before {
@@ -117,7 +123,7 @@
 
 @media (max-width: 900px) {
   .life-stream-message-list::before {
-    left: 24px;
+    left: var(--life-stream-rail-x, 24px);
     transform: none;
   }
 
@@ -140,6 +146,10 @@
   padding: 24px var(--main-panel-padding);
   color: var(--text-muted);
   font-size: 0.95rem;
+}
+
+.life-stream-empty {
+  padding-bottom: 16px;
 }
 
 .life-stream-error-banner {

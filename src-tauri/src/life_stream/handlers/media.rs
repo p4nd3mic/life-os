@@ -210,12 +210,7 @@ impl MediaHandler {
                         | "rating"
                 )
             })
-            .filter(|word| {
-                !word
-                    .parse::<u8>()
-                    .map(|n| n <= 10)
-                    .unwrap_or(false)
-            })
+            .filter(|word| !word.parse::<u8>().map(|n| n <= 10).unwrap_or(false))
             .collect::<Vec<_>>()
             .join(" ");
 

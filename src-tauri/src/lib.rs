@@ -20,8 +20,8 @@ mod files;
 mod git;
 mod git_utils;
 mod life;
-mod life_stream;
 pub mod life_core;
+mod life_stream;
 mod local_usage;
 mod local_usage_core;
 mod memory;
@@ -38,6 +38,7 @@ mod terminal;
 mod types;
 mod utils;
 mod window;
+mod workspace_access;
 mod workspaces;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -160,6 +161,12 @@ pub fn run() {
             life_stream::life_stream_cancel,
             life_stream::life_stream_retry,
             life_stream::life_stream_clarify,
+            life_stream::life_stream_task_dock_load,
+            life_stream::life_stream_task_dock_save,
+            life_stream::life_stream_restructure,
+            life_stream::life_stream_image_candidates,
+            life_stream::life_stream_image_attach,
+            life_stream::life_stream_image_backfill,
             prompts::prompts_global_dir,
             memory_commands::memory_status,
             memory_commands::memory_search,

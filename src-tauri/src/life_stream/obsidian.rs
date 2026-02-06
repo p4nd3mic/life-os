@@ -7,7 +7,8 @@ use tokio::fs;
 
 use super::service::EnrichedData;
 use super::types::{
-    CardImage, CardState, CardType, DomainId, ExpandedContent, ExpandedSection, LifeStreamError,
+    CardImage, CardState, CardType, CausalCardContent, CausalLayoutState, CausalLink, CausalNode,
+    CausalNodeRole, DomainId, ExpandedContent, ExpandedSection, LayoutMode, LifeStreamError,
     StreamCard,
 };
 
@@ -300,6 +301,7 @@ fn parse_cards_from_stream(content: &str, date: NaiveDate, stream_file: &Path) -
                 entity_links: None,
                 actions: Vec::new(),
             });
+            let causal = build_legacy_causal_content(&entry, &note);
 
             StreamCard {
                 id: entry.task_id.clone(),
@@ -310,6 +312,8 @@ fn parse_cards_from_stream(content: &str, date: NaiveDate, stream_file: &Path) -
                 card_type: CardType::Generic,
                 domain: DomainId::General,
                 emoji: "📝".to_string(),
+                layout_mode: LayoutMode::CauseEffect,
+                causal: Some(causal),
                 state: CardState::Complete,
                 processing_step: None,
                 processing_steps: None,
@@ -337,6 +341,239 @@ fn parse_cards_from_stream(content: &str, date: NaiveDate, stream_file: &Path) -
             }
         })
         .collect()
+}
+
+fn build_legacy_causal_content(entry: &ParsedEntry, note: &NotePayload) -> CausalCardContent {
+    let frame = infer_legacy_frame(note);
+    let left_role = infer_legacy_left_role(frame, note.prompt.as_deref().unwrap_or(""));
+    let right_role = infer_legacy_right_role(frame);
+    let left_id = format!("{}:left:0", entry.task_id);
+    let left_text = note
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| entry.title.clone());
+
+    let left_nodes = vec![CausalNode {
+        id: left_id.clone(),
+        text: left_text,
+        role: Some(left_role),
+        image: None,
+        entity: None,
+        occurred_at: Some(entry.occurred_at.clone()),
+    }];
+
+    let mut right_texts = Vec::new();
+    if let Some(response) = note.response_text() {
+        let extracted = extract_legacy_points(&response, frame);
+        if extracted.is_empty() {
+            right_texts.push(response);
+        } else {
+            right_texts.extend(extracted);
+        }
+    }
+
+    if let Some(summary) = note.summary_text() {
+        let summary_trimmed = summary.trim();
+        if !summary_trimmed.is_empty()
+            && !right_texts
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(summary_trimmed))
+        {
+            right_texts.push(summary_trimmed.to_string());
+        }
+    }
+
+    if right_texts.is_empty() {
+        right_texts.push(entry.title.clone());
+    }
+
+    let right_nodes = right_texts
+        .iter()
+        .enumerate()
+        .map(|(index, text)| CausalNode {
+            id: format!("{}:right:{index}", entry.task_id),
+            text: truncate_text(text, 220),
+            role: Some(right_role.clone()),
+            image: None,
+            entity: None,
+            occurred_at: None,
+        })
+        .collect::<Vec<_>>();
+
+    let links = right_nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| CausalLink {
+            id: Some(format!("{}:link:{index}", entry.task_id)),
+            from_id: left_id.clone(),
+            to_id: node.id.clone(),
+            label: None,
+            strength: Some(if index < 3 { 1.0 } else { 0.55 }),
+        })
+        .collect::<Vec<_>>();
+
+    let layout = if right_nodes.len() > 3 {
+        Some(CausalLayoutState {
+            visible_right_count: Some(3),
+            top_link_limit: Some(3),
+            expanded: Some(false),
+        })
+    } else {
+        None
+    };
+
+    CausalCardContent {
+        left_nodes,
+        right_nodes,
+        links,
+        layout,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyFrameProfile {
+    CauseEffect,
+    ActionReward,
+    ClaimResponse,
+}
+
+fn infer_legacy_frame(note: &NotePayload) -> LegacyFrameProfile {
+    let prompt = note.prompt.as_deref().unwrap_or("").to_lowercase();
+
+    if [
+        "delivery",
+        "shift",
+        "order",
+        "doordash",
+        "uber",
+        "grubhub",
+        "instacart",
+    ]
+    .iter()
+    .any(|keyword| prompt.contains(keyword))
+    {
+        return LegacyFrameProfile::ActionReward;
+    }
+
+    let has_headings = note
+        .response
+        .as_deref()
+        .map(|text| text.lines().any(|line| line.trim_start().starts_with('#')))
+        .unwrap_or(false);
+
+    if has_headings
+        || prompt.contains('?')
+        || [
+            "i think",
+            "i feel",
+            "i believe",
+            "favorite",
+            "should",
+            "why",
+            "how",
+            "what if",
+        ]
+        .iter()
+        .any(|marker| prompt.contains(marker))
+    {
+        return LegacyFrameProfile::ClaimResponse;
+    }
+
+    LegacyFrameProfile::CauseEffect
+}
+
+fn infer_legacy_left_role(frame: LegacyFrameProfile, prompt: &str) -> CausalNodeRole {
+    match frame {
+        LegacyFrameProfile::ActionReward => CausalNodeRole::Action,
+        LegacyFrameProfile::ClaimResponse => {
+            if prompt.contains('?') {
+                CausalNodeRole::Question
+            } else {
+                CausalNodeRole::Cause
+            }
+        }
+        LegacyFrameProfile::CauseEffect => CausalNodeRole::Cause,
+    }
+}
+
+fn infer_legacy_right_role(frame: LegacyFrameProfile) -> CausalNodeRole {
+    match frame {
+        LegacyFrameProfile::ActionReward => CausalNodeRole::Reward,
+        LegacyFrameProfile::ClaimResponse => CausalNodeRole::Response,
+        LegacyFrameProfile::CauseEffect => CausalNodeRole::Effect,
+    }
+}
+
+fn extract_legacy_points(text: &str, frame: LegacyFrameProfile) -> Vec<String> {
+    if frame == LegacyFrameProfile::ClaimResponse {
+        let headings = extract_legacy_headings(text);
+        if !headings.is_empty() {
+            return headings;
+        }
+    }
+
+    let mut points = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let item = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .map(str::trim)
+            .or_else(|| {
+                let (prefix, rest) = trimmed.split_once(". ")?;
+                if prefix.chars().all(|ch| ch.is_ascii_digit()) {
+                    Some(rest.trim())
+                } else {
+                    None
+                }
+            });
+
+        if let Some(value) = item {
+            if !value.is_empty() {
+                points.push(value.to_string());
+            }
+        }
+    }
+
+    points
+}
+
+fn extract_legacy_headings(text: &str) -> Vec<String> {
+    let mut headings = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('#') {
+            continue;
+        }
+
+        let value = trimmed.trim_start_matches('#').trim();
+        if value.is_empty() {
+            continue;
+        }
+
+        headings.push(truncate_text(value, 180));
+    }
+
+    headings
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    let truncated: String = trimmed.chars().take(max_chars).collect();
+    format!("{truncated}...")
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -576,5 +813,39 @@ Logged entry.
         assert_eq!(second.original_input.as_deref(), Some("Test input"));
         assert_eq!(second.summary.as_deref(), Some("Logged entry."));
         assert!(second.expanded.is_none());
+    }
+
+    #[test]
+    fn legacy_causal_content_prefers_markdown_headings_for_claim_response() {
+        let content = r#"
+# February 2026
+
+## Mon Feb 02
+| Plan | Actual | Delta |
+|------|--------|---|
+| -- | 22:32 Response | + | <!--task:2026-02-02-2232-test-->
+---
+<!--note:2026-02-02-2232-test-->
+<!--prompt_b64:SSB0aGluayBlcGlzb2RlIDUgb2YgQ293Ym95IEJlYm9wIGlzIG15IGZhdm9yaXRlLiBTaG91bGQgaXQgaGF2ZSBiZWVuIGVwaXNvZGUgb25lPw==-->
+<!--response_b64:IyMgV2h5IEVwIDUgZmVlbHMgbGlrZSB0aGUgcmVhbCBzaG93IHN0YXJ0cyBoZXJlCi0gYm91bnRpZXMKLSBzdHlsZQotIGphenoKCiMjIEl0IHNob3VsZCd2ZSBiZWVuIEVwaXNvZGUgMSDigJQgdHJhZGVvZmYKLSBZb3UgZ2FpbiBtb21lbnR1bQ==-->
+"#;
+
+        let date = NaiveDate::from_ymd_opt(2026, 2, 2).expect("valid date");
+        let cards = parse_cards_from_stream(content, date, Path::new("/vault/Stream/2026-02.md"));
+        assert_eq!(cards.len(), 1);
+
+        let causal = cards[0].causal.as_ref().expect("causal graph");
+        assert_eq!(causal.left_nodes.len(), 1);
+        assert_eq!(causal.left_nodes[0].role, Some(CausalNodeRole::Question));
+        assert!(causal.right_nodes.len() >= 2);
+        assert_eq!(causal.right_nodes[0].role, Some(CausalNodeRole::Response));
+        assert!(causal.right_nodes[0]
+            .text
+            .to_lowercase()
+            .contains("real show starts here"));
+        assert!(causal.right_nodes[1]
+            .text
+            .to_lowercase()
+            .contains("tradeoff"));
     }
 }

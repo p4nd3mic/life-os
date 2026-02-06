@@ -56,6 +56,14 @@ pub enum DomainId {
     General,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutMode {
+    #[default]
+    Classic,
+    CauseEffect,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageStatus {
@@ -71,6 +79,74 @@ pub struct CardImage {
     pub status: ImageStatus,
     #[serde(default)]
     pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageCandidate {
+    #[serde(rename = "sourcePath")]
+    pub source_path: String,
+    #[serde(rename = "sourceKind")]
+    pub source_kind: String,
+    pub score: i64,
+    #[serde(default)]
+    pub reason: Vec<String>,
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+    #[serde(rename = "isManaged")]
+    pub is_managed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageCandidateResponse {
+    #[serde(rename = "entityKey")]
+    pub entity_key: String,
+    #[serde(rename = "entityName")]
+    pub entity_name: String,
+    #[serde(rename = "entityType")]
+    pub entity_type: String,
+    pub candidates: Vec<ImageCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAssetRecord {
+    pub id: String,
+    #[serde(rename = "relativePath")]
+    pub relative_path: String,
+    #[serde(rename = "sourcePath")]
+    pub source_path: String,
+    #[serde(rename = "sourceKind")]
+    pub source_kind: String,
+    pub sha256: String,
+    pub mime: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAttachResult {
+    pub patch: StreamCardPatch,
+    pub version: u32,
+    #[serde(rename = "entityKey")]
+    pub entity_key: String,
+    #[serde(rename = "primaryRelativePath")]
+    pub primary_relative_path: String,
+    pub asset: ImageAssetRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageBackfillSummary {
+    pub updated: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    #[serde(default)]
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +200,70 @@ pub struct ClarificationOption {
     pub emoji: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CausalNodeRole {
+    Cause,
+    Effect,
+    Action,
+    Reward,
+    Question,
+    Response,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CausalNode {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub role: Option<CausalNodeRole>,
+    #[serde(default)]
+    pub image: Option<CardImage>,
+    #[serde(default)]
+    pub entity: Option<EntityRef>,
+    #[serde(default, rename = "occurredAt")]
+    pub occurred_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CausalLink {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(rename = "fromId")]
+    pub from_id: String,
+    #[serde(rename = "toId")]
+    pub to_id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub strength: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CausalLayoutState {
+    #[serde(default, rename = "visibleRightCount")]
+    pub visible_right_count: Option<u32>,
+    #[serde(default, rename = "topLinkLimit")]
+    pub top_link_limit: Option<u32>,
+    #[serde(default)]
+    pub expanded: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CausalCardContent {
+    #[serde(rename = "leftNodes")]
+    pub left_nodes: Vec<CausalNode>,
+    #[serde(rename = "rightNodes")]
+    pub right_nodes: Vec<CausalNode>,
+    pub links: Vec<CausalLink>,
+    #[serde(default)]
+    pub layout: Option<CausalLayoutState>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CardSource {
     #[serde(rename = "streamFile")]
@@ -157,6 +297,10 @@ pub struct StreamCard {
     pub card_type: CardType,
     pub domain: DomainId,
     pub emoji: String,
+    #[serde(default, rename = "layoutMode")]
+    pub layout_mode: LayoutMode,
+    #[serde(default)]
+    pub causal: Option<CausalCardContent>,
 
     pub state: CardState,
     #[serde(rename = "processingStep")]
@@ -261,11 +405,77 @@ pub struct StreamCardPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expanded: Option<ExpandedContent>,
 
+    #[serde(skip_serializing_if = "Option::is_none", rename = "layoutMode")]
+    pub layout_mode: Option<LayoutMode>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causal: Option<CausalCardContent>,
+
     #[serde(
         skip_serializing_if = "Option::is_none",
         rename = "clarificationOptions"
     )]
     pub clarification_options: Option<Vec<ClarificationOption>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CausalRestructureAction {
+    SplitCause,
+    MergeEffects,
+    RelinkArrows,
+    ReframeMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CausalRestructureResult {
+    pub patch: StreamCardPatch,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskDockItemKind {
+    Task,
+    Reminder,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDockItem {
+    pub id: String,
+    pub key: String,
+    pub text: String,
+    pub kind: TaskDockItemKind,
+    pub completed: bool,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    #[serde(rename = "targetDate")]
+    pub target_date: String,
+    #[serde(default, rename = "sourceCardId")]
+    pub source_card_id: Option<String>,
+    #[serde(default, rename = "sourceNodeId")]
+    pub source_node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDockPayload {
+    pub version: u32,
+    #[serde(default)]
+    pub items: Vec<TaskDockItem>,
+}
+
+impl Default for TaskDockPayload {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            items: Vec::new(),
+        }
+    }
 }
 
 /// Constrained stat value type for sync with TypeScript.

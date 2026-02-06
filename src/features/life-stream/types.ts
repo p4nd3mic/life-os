@@ -32,6 +32,9 @@ export type DomainId =
 // Image status
 export type ImageStatus = "loading" | "ready" | "missing" | "upload_prompt";
 
+// Layout mode for card rendering
+export type StreamLayoutMode = "classic" | "cause_effect";
+
 // Entity reference (linked entities in cards)
 export type EntityRef = {
   type: string;
@@ -67,6 +70,48 @@ export type CardImage = {
   source?: string;
 };
 
+export type ImageCandidate = {
+  sourcePath: string;
+  sourceKind: string;
+  score: number;
+  reason: string[];
+  fileName: string;
+  isManaged: boolean;
+};
+
+export type ImageCandidateResponse = {
+  entityKey: string;
+  entityName: string;
+  entityType: string;
+  candidates: ImageCandidate[];
+};
+
+export type ImageAssetRecord = {
+  id: string;
+  relativePath: string;
+  sourcePath: string;
+  sourceKind: string;
+  sha256: string;
+  mime: string;
+  createdAt: string;
+  tags: string[];
+};
+
+export type ImageAttachResult = {
+  patch: StreamCardPatch;
+  version: number;
+  entityKey: string;
+  primaryRelativePath: string;
+  asset: ImageAssetRecord;
+};
+
+export type ImageBackfillSummary = {
+  updated: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+};
+
 export type CardStatValue = string | number | boolean | null;
 
 export type CardRequestMeta = {
@@ -87,6 +132,76 @@ export type ClarificationOption = {
   emoji?: string;
 };
 
+export type CausalNodeRole =
+  | "cause"
+  | "effect"
+  | "action"
+  | "reward"
+  | "question"
+  | "response";
+
+export type CausalNode = {
+  id: string;
+  text: string;
+  role?: CausalNodeRole;
+  image?: CardImage;
+  entity?: EntityRef;
+  occurredAt?: string;
+};
+
+export type CausalLink = {
+  id?: string;
+  fromId: string;
+  toId: string;
+  label?: string;
+  strength?: number;
+};
+
+export type CausalLayoutState = {
+  visibleRightCount?: number;
+  topLinkLimit?: number;
+  expanded?: boolean;
+};
+
+export type CausalCardContent = {
+  leftNodes: CausalNode[];
+  rightNodes: CausalNode[];
+  links: CausalLink[];
+  layout?: CausalLayoutState;
+};
+
+export type CausalRestructureAction =
+  | "split_cause"
+  | "merge_effects"
+  | "relink_arrows"
+  | "reframe_mode";
+
+export type CausalRestructureResult = {
+  patch: StreamCardPatch;
+  version: number;
+};
+
+export type TaskDockItemKind = "task" | "reminder";
+export type TaskDockFilter = "today" | "all";
+
+export type TaskDockItem = {
+  id: string;
+  key: string;
+  text: string;
+  kind: TaskDockItemKind;
+  completed: boolean;
+  createdAt: string;
+  updatedAt: string;
+  targetDate: string;
+  sourceCardId?: string;
+  sourceNodeId?: string;
+};
+
+export type TaskDockPayload = {
+  version: number;
+  items: TaskDockItem[];
+};
+
 // Main StreamCard type
 export type StreamCard = {
   id: string;
@@ -98,6 +213,8 @@ export type StreamCard = {
   cardType: CardType;
   domain: DomainId;
   emoji: string;
+  layoutMode?: StreamLayoutMode;
+  causal?: CausalCardContent;
 
   state: CardState;
   processingStep?: string; // Current step being shown
@@ -142,6 +259,8 @@ export type StreamCardPatch = {
   image?: CardImage;
   expanded?: ExpandedContent;
   clarificationOptions?: ClarificationOption[];
+  layoutMode?: StreamLayoutMode;
+  causal?: CausalCardContent;
 };
 
 // Event types for real-time updates

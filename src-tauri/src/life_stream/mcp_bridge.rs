@@ -51,7 +51,10 @@ pub struct LifeMcpBridge {
 impl LifeMcpBridge {
     pub fn new(mcp_path: Option<String>) -> Self {
         Self {
-            state: Arc::new(Mutex::new(BridgeState { request_id: 1, ..Default::default() })),
+            state: Arc::new(Mutex::new(BridgeState {
+                request_id: 1,
+                ..Default::default()
+            })),
             mcp_path,
         }
     }
@@ -92,10 +95,7 @@ impl LifeMcpBridge {
             .map_err(|err| format!("Failed to spawn life-mcp: {err}"))?;
 
         state.stdin = child.stdin.take();
-        state.stdout = child
-            .stdout
-            .take()
-            .map(|stdout| BufReader::new(stdout));
+        state.stdout = child.stdout.take().map(|stdout| BufReader::new(stdout));
         state.child = Some(child);
         Ok(())
     }
@@ -160,7 +160,10 @@ impl LifeMcpBridge {
         let response: JsonRpcResponse =
             serde_json::from_str(&line).map_err(|err| format!("Invalid response: {err}"))?;
         if let Some(error) = response.error {
-            return Err(format!("RPC error: {} (code {})", error.message, error.code));
+            return Err(format!(
+                "RPC error: {} (code {})",
+                error.message, error.code
+            ));
         }
 
         Ok(response.result)

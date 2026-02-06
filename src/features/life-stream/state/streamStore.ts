@@ -1,7 +1,19 @@
-import type { LifeStreamEvent, StreamCard, StreamCardPatch } from "../types";
+import type {
+  LifeStreamEvent,
+  StreamCard,
+  StreamCardPatch,
+} from "../types";
+import { resolvePersistedLayoutMode } from "../utils/layoutMode";
 
 type Listener = () => void;
 type CardListener = () => void;
+
+function normalizeCard(card: StreamCard): StreamCard {
+  return {
+    ...card,
+    layoutMode: resolvePersistedLayoutMode(card),
+  };
+}
 
 class StreamStore {
   private cards: Map<string, StreamCard> = new Map();
@@ -85,24 +97,26 @@ class StreamStore {
   loadCards(cards: StreamCard[]): void {
     this.cards.clear();
     for (const card of cards) {
+      const normalized = normalizeCard(card);
       const occurredAt =
-        card.occurredAt ||
-        card.createdAt ||
-        card.updatedAt ||
+        normalized.occurredAt ||
+        normalized.createdAt ||
+        normalized.updatedAt ||
         new Date().toISOString();
-      this.cards.set(card.id, { ...card, occurredAt });
+      this.cards.set(normalized.id, { ...normalized, occurredAt });
     }
     this.snapshotDirty = true;
     this.notifyGlobal();
   }
 
   addCard(card: StreamCard): void {
+    const normalized = normalizeCard(card);
     const occurredAt =
-      card.occurredAt ||
-      card.createdAt ||
-      card.updatedAt ||
+      normalized.occurredAt ||
+      normalized.createdAt ||
+      normalized.updatedAt ||
       new Date().toISOString();
-    this.cards.set(card.id, { ...card, occurredAt });
+    this.cards.set(normalized.id, { ...normalized, occurredAt });
     this.snapshotDirty = true;
     this.notifyGlobal();
   }
@@ -149,6 +163,13 @@ class StreamStore {
       updated.clarificationOptions =
         patch.clarificationOptions.length > 0 ? patch.clarificationOptions : undefined;
     }
+    if (patch.layoutMode !== undefined) {
+      updated.layoutMode = patch.layoutMode;
+    }
+    if (patch.causal !== undefined) {
+      updated.causal = patch.causal;
+    }
+    updated.layoutMode = resolvePersistedLayoutMode(updated);
 
     this.cards.set(cardId, updated);
     this.snapshotDirty = true;
@@ -178,7 +199,7 @@ class StreamStore {
     const existing = this.cards.get(card.id);
     if (existing && card.version <= existing.version) return;
 
-    this.cards.set(card.id, card);
+    this.cards.set(card.id, normalizeCard(card));
     this.snapshotDirty = true;
     this.notifyGlobal();
     this.notifyCard(card.id);

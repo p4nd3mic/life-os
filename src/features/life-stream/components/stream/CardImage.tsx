@@ -28,10 +28,23 @@ export function CardImage({
   onRequestUpload,
 }: CardImageProps) {
   const [imageFailed, setImageFailed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   useEffect(() => {
     setImageFailed(false);
+    setPreviewOpen(false);
   }, [image?.url]);
+
+  useEffect(() => {
+    if (!previewOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPreviewOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [previewOpen]);
 
   const status = image?.status ?? "missing";
   const hasImage = Boolean(image?.url) && status === "ready" && !imageFailed;
@@ -62,12 +75,50 @@ export function CardImage({
       }
     >
       {hasImage ? (
-        <img
-          src={resolvedSrc}
-          alt={title ?? "Card image"}
-          loading="lazy"
-          onError={() => setImageFailed(true)}
-        />
+        <>
+          <button
+            type="button"
+            className="life-stream-card-image__button"
+            data-no-toggle
+            onClick={() => setPreviewOpen(true)}
+          >
+            <img
+              src={resolvedSrc}
+              alt={title ?? "Card image"}
+              loading="lazy"
+              onError={() => setImageFailed(true)}
+            />
+            <span className="life-stream-card-image__zoom">🔍 Expand</span>
+          </button>
+          {previewOpen && (
+            <div
+              className="life-stream-card-image__lightbox"
+              role="dialog"
+              aria-label="Expanded image preview"
+              data-no-toggle
+              onClick={() => setPreviewOpen(false)}
+            >
+              <div
+                className="life-stream-card-image__lightbox-content"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  className="life-stream-card-image__lightbox-close"
+                  onClick={() => setPreviewOpen(false)}
+                  aria-label="Close image preview"
+                >
+                  ✕
+                </button>
+                <img
+                  src={resolvedSrc}
+                  alt={title ?? "Card image"}
+                  className="life-stream-card-image__lightbox-image"
+                />
+              </div>
+            </div>
+          )}
+        </>
       ) : (
         <div className="life-stream-card-image__placeholder">
           {status === "loading" ? (

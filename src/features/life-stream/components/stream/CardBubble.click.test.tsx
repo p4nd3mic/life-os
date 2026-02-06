@@ -32,6 +32,7 @@ describe("CardBubble expand click behavior", () => {
         onCancel={() => {}}
         onRetry={() => {}}
         onClarify={() => {}}
+        onRestructure={() => {}}
       />,
     );
 

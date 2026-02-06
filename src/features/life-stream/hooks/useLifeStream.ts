@@ -2,7 +2,14 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { streamStore } from "../state/streamStore";
-import type { LifeStreamEvent, StreamCard } from "../types";
+import type {
+  CausalRestructureAction,
+  CausalRestructureResult,
+  ImageAttachResult,
+  ImageCandidateResponse,
+  LifeStreamEvent,
+  StreamCard,
+} from "../types";
 
 type SubmitStatus = {
   state: "idle" | "sending" | "received" | "created" | "error";
@@ -95,6 +102,7 @@ export function useLifeStream(workspaceId: string | null) {
       cardType: "generic",
       domain: "general",
       emoji: "📝",
+      layoutMode: "cause_effect",
       state: "pending",
       processingStep: "Submitting...",
       processingSteps: ["Submitting..."],
@@ -189,6 +197,86 @@ export function useLifeStream(workspaceId: string | null) {
     }
   }, [workspaceId]);
 
+  const restructure = useCallback(
+    async (
+      cardId: string,
+      action: CausalRestructureAction,
+      options?: {
+        sourceNodeIds?: string[];
+        targetMode?: "cause_effect" | "action_reward";
+      },
+    ) => {
+      if (!workspaceId) return;
+
+      try {
+        const result = await invoke<CausalRestructureResult>("life_stream_restructure", {
+          workspaceId,
+          cardId,
+          action,
+          sourceNodeIds: options?.sourceNodeIds ?? null,
+          targetMode: options?.targetMode ?? null,
+        });
+        streamStore.updateCard(cardId, result.patch, result.version);
+      } catch (err) {
+        console.error("Failed to restructure card:", err);
+      }
+    },
+    [workspaceId],
+  );
+
+  const getImageCandidates = useCallback(
+    async (cardId: string, nodeId?: string | null): Promise<ImageCandidateResponse | null> => {
+      if (!workspaceId) return null;
+      try {
+        return await invoke<ImageCandidateResponse>("life_stream_image_candidates", {
+          workspaceId,
+          cardId,
+          nodeId: nodeId ?? null,
+        });
+      } catch (err) {
+        console.error("Failed to load image candidates:", err);
+        return null;
+      }
+    },
+    [workspaceId],
+  );
+
+  const attachImage = useCallback(
+    async (
+      cardId: string,
+      sourcePath: string,
+      options?: {
+        nodeId?: string | null;
+        setPrimary?: boolean;
+        setContextOverride?: boolean;
+        contextHint?: string | null;
+        updateEntityFile?: boolean;
+        updateEntityEmbed?: boolean;
+      },
+    ): Promise<ImageAttachResult | null> => {
+      if (!workspaceId) return null;
+      try {
+        const result = await invoke<ImageAttachResult>("life_stream_image_attach", {
+          workspaceId,
+          cardId,
+          nodeId: options?.nodeId ?? null,
+          sourcePath,
+          setPrimary: options?.setPrimary ?? true,
+          setContextOverride: options?.setContextOverride ?? false,
+          contextHint: options?.contextHint ?? null,
+          updateEntityFile: options?.updateEntityFile ?? true,
+          updateEntityEmbed: options?.updateEntityEmbed ?? false,
+        });
+        streamStore.updateCard(cardId, result.patch, result.version);
+        return result;
+      } catch (err) {
+        console.error("Failed to attach image:", err);
+        return null;
+      }
+    },
+    [workspaceId],
+  );
+
   // Navigate to previous/next day
   const goToPreviousDay = useCallback(() => {
     const date = new Date(currentDate);
@@ -237,6 +325,9 @@ export function useLifeStream(workspaceId: string | null) {
     cancel,
     retry,
     clarify,
+    restructure,
+    getImageCandidates,
+    attachImage,
     loadDay,
     goToPreviousDay,
     goToNextDay,

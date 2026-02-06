@@ -49,6 +49,13 @@ export type TextFileResponse = {
   truncated: boolean;
 };
 
+export type LifeStreamImageBackfillSummary = {
+  updated: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+};
+
 export async function pickWorkspacePath(): Promise<string | null> {
   const selection = await open({ directory: true, multiple: false });
   if (!selection || Array.isArray(selection)) {
@@ -154,6 +161,16 @@ export async function enrichMediaCovers(
   force = false,
 ): Promise<MediaCoverSummary> {
   return invoke<MediaCoverSummary>("enrich_media_covers", { workspaceId, force });
+}
+
+export async function lifeStreamImageBackfill(
+  workspaceId: string,
+  updateEmbedBlock = false,
+): Promise<LifeStreamImageBackfillSummary> {
+  return invoke<LifeStreamImageBackfillSummary>("life_stream_image_backfill", {
+    workspaceId,
+    updateEmbedBlock,
+  });
 }
 
 export async function addWorkspace(

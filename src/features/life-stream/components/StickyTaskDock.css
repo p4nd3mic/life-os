@@ -1,0 +1,182 @@
+.life-sticky-task-dock {
+  position: sticky;
+  bottom: 10px;
+  z-index: 9;
+  margin-top: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(106, 166, 255, 0.35);
+  background: linear-gradient(
+    180deg,
+    rgba(10, 16, 26, 0.92) 0%,
+    rgba(7, 12, 20, 0.92) 100%
+  );
+  box-shadow:
+    0 0 0 1px rgba(106, 166, 255, 0.12),
+    0 8px 28px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(16px);
+  padding: 10px 12px;
+}
+
+.life-sticky-task-dock__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.life-sticky-task-dock__title-wrap {
+  min-width: 0;
+}
+
+.life-sticky-task-dock__title {
+  color: var(--text-stronger);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.life-sticky-task-dock__meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.life-sticky-task-dock__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.life-sticky-task-dock__chip,
+.life-sticky-task-dock__collapse {
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(15, 23, 42, 0.7);
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.life-sticky-task-dock__chip.is-active {
+  border-color: rgba(106, 166, 255, 0.55);
+  color: rgba(202, 223, 255, 0.96);
+  background: rgba(58, 109, 180, 0.24);
+}
+
+.life-sticky-task-dock__composer {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.life-sticky-task-dock__composer input {
+  flex: 1;
+  min-width: 0;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(15, 23, 42, 0.68);
+  color: var(--text-primary);
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.life-sticky-task-dock__composer button {
+  border-radius: 10px;
+  border: 1px solid rgba(106, 166, 255, 0.45);
+  background: rgba(58, 109, 180, 0.24);
+  color: rgba(219, 234, 255, 0.95);
+  padding: 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.life-sticky-task-dock__list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: min(34vh, 320px);
+  overflow: auto;
+}
+
+.life-sticky-task-dock__item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(8, 14, 24, 0.72);
+  padding: 6px 8px;
+}
+
+.life-sticky-task-dock__item.is-complete {
+  opacity: 0.65;
+}
+
+.life-sticky-task-dock__check {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.life-sticky-task-dock__text {
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.life-sticky-task-dock__item.is-complete .life-sticky-task-dock__text {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.life-sticky-task-dock__item-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.life-sticky-task-dock__item-actions button {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(15, 23, 42, 0.6);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.life-sticky-task-dock__item-actions .life-sticky-task-dock__review {
+  width: auto;
+  min-width: 58px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border-color: rgba(56, 189, 248, 0.42);
+  background: rgba(8, 47, 73, 0.38);
+  color: rgba(186, 230, 253, 0.95);
+  font-size: 11px;
+}
+
+.life-sticky-task-dock__item-actions button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.life-sticky-task-dock__empty {
+  border-radius: 10px;
+  border: 1px dashed rgba(148, 163, 184, 0.28);
+  padding: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.life-sticky-task-dock.is-collapsed {
+  padding-bottom: 8px;
+}

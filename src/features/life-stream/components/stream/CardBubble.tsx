@@ -1,29 +1,71 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ClarificationOption, StreamCard } from "../../types";
+import type {
+  ClarificationOption,
+  CausalRestructureAction,
+  ImageCandidate,
+  ImageCandidateResponse,
+  StreamCard,
+} from "../../types";
 import { CardImage } from "./CardImage";
 import { ExpandedCard } from "./ExpandedCard";
 import { ProcessingIndicator } from "./ProcessingIndicator";
+import { CauseEffectCard } from "./CauseEffectCard";
+import { ImageAttachSheet, type ImageAttachSelectionOptions } from "./ImageAttachSheet";
 import { resolveCardTitleWithIcon } from "../../utils/cardTitle";
 import { getCardHighlights } from "../../utils/cardHighlights";
 import { Markdown } from "../../../messages/components/Markdown";
 import { buildCollapsedSummary } from "../../utils/summary";
+import { resolveRenderableLayoutMode } from "../../utils/layoutMode";
+import { useLifeStreamContextOptional } from "../../context/LifeStreamContext";
 import "./CardBubble.css";
+
+type ReviewCandidatesEventDetail = {
+  cardId: string;
+  nodeId?: string;
+};
 
 type CardBubbleProps = {
   card: StreamCard;
   onCancel: (cardId: string) => void;
   onRetry: (cardId: string) => void;
   onClarify: (cardId: string, optionId: string) => void;
+  onRestructure: (
+    cardId: string,
+    action: CausalRestructureAction,
+    options?: { sourceNodeIds?: string[]; targetMode?: "cause_effect" | "action_reward" },
+  ) => void;
 };
 
-export function CardBubble({ card, onCancel, onRetry, onClarify }: CardBubbleProps) {
+export function CardBubble({
+  card,
+  onCancel,
+  onRetry,
+  onClarify,
+  onRestructure,
+}: CardBubbleProps) {
+  const context = useLifeStreamContextOptional();
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isImageAttachOpen, setIsImageAttachOpen] = useState(false);
+  const [imageAttachTargetNodeId, setImageAttachTargetNodeId] = useState<string | null>(null);
+  const [imageAttachContextHint, setImageAttachContextHint] = useState<string | null>(null);
+  const [imageAttachResponse, setImageAttachResponse] = useState<ImageCandidateResponse | null>(null);
+  const [imageAttachLoading, setImageAttachLoading] = useState(false);
+  const [imageAttachError, setImageAttachError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!card.expanded || card.state !== "complete") {
       setIsExpanded(false);
     }
   }, [card.expanded, card.state]);
+
+  useEffect(() => {
+    setImageAttachTargetNodeId(null);
+    setImageAttachContextHint(null);
+    setImageAttachResponse(null);
+    setImageAttachError(null);
+    setImageAttachLoading(false);
+    setIsImageAttachOpen(false);
+  }, [card.id]);
 
   const displayTitle = useMemo(() => resolveCardTitleWithIcon(card), [card]);
   const highlights = useMemo(() => getCardHighlights(card), [card]);
@@ -34,6 +76,13 @@ export function CardBubble({ card, onCancel, onRetry, onClarify }: CardBubblePro
   const canRetry = card.state === "error";
   const canRetryMcp = card.state === "complete" && Boolean(card.errorMessage);
   const canExpand = card.state === "complete" && Boolean(card.expanded);
+  const renderLayoutMode = useMemo(
+    () => resolveRenderableLayoutMode(card),
+    [card],
+  );
+  const showCauseEffectLayout =
+    renderLayoutMode === "cause_effect" && Boolean(card.causal);
+  const causalCard = showCauseEffectLayout ? card.causal : undefined;
   const isDeliverySession = card.cardType === "delivery_session";
   const clarificationOptions = card.clarificationOptions ?? [];
   const showPreview =
@@ -130,13 +179,136 @@ export function CardBubble({ card, onCancel, onRetry, onClarify }: CardBubblePro
   );
 
   const showImage =
-    Boolean(card.image) && card.image?.status !== "missing";
+    !showCauseEffectLayout &&
+    Boolean(card.image) &&
+    card.image?.status !== "missing";
+
+  const closeImageAttachSheet = useCallback(() => {
+    setIsImageAttachOpen(false);
+    setImageAttachTargetNodeId(null);
+    setImageAttachContextHint(null);
+    setImageAttachResponse(null);
+    setImageAttachError(null);
+    setImageAttachLoading(false);
+  }, []);
+
+  const openImageAttachSheet = useCallback(
+    async (nodeId: string | null, contextHint?: string | null) => {
+      if (!context?.getImageCandidates) {
+        setIsImageAttachOpen(true);
+        setImageAttachTargetNodeId(nodeId);
+        setImageAttachContextHint(contextHint ?? null);
+        setImageAttachError("Image picker unavailable.");
+        setImageAttachResponse(null);
+        return;
+      }
+
+      setIsImageAttachOpen(true);
+      setImageAttachTargetNodeId(nodeId);
+      setImageAttachContextHint(contextHint ?? null);
+      setImageAttachError(null);
+      setImageAttachResponse(null);
+      setImageAttachLoading(true);
+      try {
+        const response = await context.getImageCandidates(card.id, nodeId);
+        if (!response) {
+          setImageAttachError("No image candidates found.");
+          return;
+        }
+        setImageAttachResponse(response);
+      } catch (error) {
+        setImageAttachError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setImageAttachLoading(false);
+      }
+    },
+    [card.id, context],
+  );
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const customEvent = event as CustomEvent<ReviewCandidatesEventDetail>;
+      const detail = customEvent.detail;
+      if (!detail || detail.cardId !== card.id) {
+        return;
+      }
+      const targetNodeId = detail.nodeId ?? null;
+      const node = causalCard
+        ? [...causalCard.leftNodes, ...causalCard.rightNodes].find(
+            (item) => item.id === targetNodeId,
+          )
+        : undefined;
+      void openImageAttachSheet(
+        targetNodeId,
+        node?.text ?? card.originalInput ?? null,
+      );
+    };
+    window.addEventListener("life-stream-review-image-candidates", handler as EventListener);
+    return () => {
+      window.removeEventListener(
+        "life-stream-review-image-candidates",
+        handler as EventListener,
+      );
+    };
+  }, [card.id, card.originalInput, causalCard, openImageAttachSheet]);
+
+  const applyCandidateImage = useCallback(
+    async (
+      candidate: ImageCandidate,
+      selectionOptions?: ImageAttachSelectionOptions,
+    ) => {
+      if (!context?.attachImage) {
+        setImageAttachError("Attach image action unavailable.");
+        return;
+      }
+      setImageAttachLoading(true);
+      setImageAttachError(null);
+      const result = await context.attachImage(card.id, candidate.sourcePath, {
+        nodeId: imageAttachTargetNodeId,
+        setPrimary: true,
+        setContextOverride: selectionOptions?.setContextOverride ?? false,
+        contextHint: imageAttachContextHint,
+        updateEntityFile: selectionOptions?.updateEntityFile ?? true,
+        updateEntityEmbed: selectionOptions?.updateEntityEmbed ?? false,
+      });
+      setImageAttachLoading(false);
+      if (!result) {
+        setImageAttachError("Failed to attach image.");
+        return;
+      }
+      closeImageAttachSheet();
+    },
+    [
+      card.id,
+      closeImageAttachSheet,
+      context,
+      imageAttachContextHint,
+      imageAttachTargetNodeId,
+    ],
+  );
+
+  const browseForImage = useCallback(async () => {
+    const { pickImageFiles } = await import("../../../../services/tauri");
+    const selection = await pickImageFiles();
+    const sourcePath = selection[0];
+    if (!sourcePath) {
+      return;
+    }
+    await applyCandidateImage({
+      sourcePath,
+      sourceKind: "manual_browse",
+      score: 0,
+      reason: ["manual-browse"],
+      fileName: sourcePath.split("/").pop() ?? sourcePath,
+      isManaged: false,
+    });
+  }, [applyCandidateImage]);
 
   return (
     <article
       className={`bubble life-card-bubble state-${card.state}${
         isExpanded ? " is-expanded" : ""
-      } domain-${card.domain}`}
+      } domain-${card.domain} layout-${renderLayoutMode}`}
       aria-expanded={isExpanded}
       onClick={handleCardClick}
     >
@@ -195,6 +367,23 @@ export function CardBubble({ card, onCancel, onRetry, onClarify }: CardBubblePro
         </div>
       )}
 
+      {causalCard && (
+        <CauseEffectCard
+          cardId={card.id}
+          cardType={card.cardType}
+          causal={causalCard}
+          onRestructure={(action, options) => onRestructure(card.id, action, options)}
+          onRequestNodeImage={(nodeId) => {
+            const node = causalCard
+              ? [...causalCard.leftNodes, ...causalCard.rightNodes].find(
+                  (item) => item.id === nodeId,
+                )
+              : undefined;
+            void openImageAttachSheet(nodeId, node?.text ?? card.originalInput ?? null);
+          }}
+        />
+      )}
+
       {showImage && card.image && (
         <div className="life-card-bubble__image">
           <CardImage
@@ -202,9 +391,27 @@ export function CardBubble({ card, onCancel, onRetry, onClarify }: CardBubblePro
             title={card.title}
             emoji={card.emoji}
             size={isExpanded ? "expanded" : "compact"}
+            onRequestUpload={() => {
+              void openImageAttachSheet(null, card.originalInput ?? null);
+            }}
           />
         </div>
       )}
+
+      <ImageAttachSheet
+        open={isImageAttachOpen}
+        loading={imageAttachLoading}
+        error={imageAttachError}
+        response={imageAttachResponse}
+        contextHint={imageAttachContextHint}
+        onClose={closeImageAttachSheet}
+        onBrowse={() => {
+          void browseForImage();
+        }}
+        onSelectCandidate={(candidate, options) => {
+          void applyCandidateImage(candidate, options);
+        }}
+      />
 
       {highlights.length > 0 && (
         <div className="life-card-bubble__highlights">
@@ -224,7 +431,7 @@ export function CardBubble({ card, onCancel, onRetry, onClarify }: CardBubblePro
         </div>
       )}
 
-      {isDeliverySession && completedOrdersSection && (
+      {!showCauseEffectLayout && isDeliverySession && completedOrdersSection && (
         <div className="life-card-bubble__section" data-no-toggle>
           <div className="life-card-bubble__label">Completed Orders</div>
           <Markdown
@@ -234,7 +441,7 @@ export function CardBubble({ card, onCancel, onRetry, onClarify }: CardBubblePro
         </div>
       )}
 
-      {isDeliverySession && totalsSection && (
+      {!showCauseEffectLayout && isDeliverySession && totalsSection && (
         <div className="life-card-bubble__section" data-no-toggle>
           <div className="life-card-bubble__label">Totals</div>
           <Markdown
@@ -244,7 +451,7 @@ export function CardBubble({ card, onCancel, onRetry, onClarify }: CardBubblePro
         </div>
       )}
 
-      {summaryText && !isExpanded && !isDeliverySession && (
+      {summaryText && !isExpanded && !isDeliverySession && !showCauseEffectLayout && (
         <div className="life-card-bubble__section">
           <Markdown
             value={summaryText}

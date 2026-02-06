@@ -3201,7 +3201,8 @@ async fn fetch_tmdb_best_poster(
     id: u64,
     preferred_language: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let url = format!("https://api.themoviedb.org/3/{media_type}/{id}/images?api_key={tmdb_api_key}");
+    let url =
+        format!("https://api.themoviedb.org/3/{media_type}/{id}/images?api_key={tmdb_api_key}");
     let resp = Client::new()
         .get(url)
         .send()
@@ -3212,9 +3213,7 @@ async fn fetch_tmdb_best_poster(
     }
     let payload: TmdbImagesResponse = resp.json().await.map_err(|err| err.to_string())?;
     if let Some(file_path) = pick_tmdb_poster(&payload.posters, preferred_language) {
-        return Ok(Some(format!(
-            "https://image.tmdb.org/t/p/w500{file_path}"
-        )));
+        return Ok(Some(format!("https://image.tmdb.org/t/p/w500{file_path}")));
     }
     Ok(None)
 }
@@ -3366,9 +3365,7 @@ async fn fetch_igdb_cover(
             if name.trim().is_empty() {
                 continue;
             }
-            let year = result
-                .first_release_date
-                .and_then(igdb_year_from_timestamp);
+            let year = result.first_release_date.and_then(igdb_year_from_timestamp);
             let score = score_igdb_candidate(&name, &variants, year_hint, year);
             candidates.push(IgdbCandidate {
                 name,

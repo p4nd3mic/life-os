@@ -22,6 +22,7 @@ use crate::state::AppState;
 use crate::storage::write_workspaces;
 use crate::types::{WorkspaceEntry, WorkspaceInfo, WorkspaceKind, WorkspaceSettings, WorktreeInfo};
 use crate::utils::{git_env_path, normalize_git_path, resolve_git_binary};
+use crate::workspace_access::ensure_workspace_access_for_workspace;
 
 fn should_skip_dir(name: &str) -> bool {
     matches!(
@@ -1511,6 +1512,7 @@ pub(crate) async fn connect_workspace(
         let settings = state.app_settings.lock().await;
         codex_args::resolve_workspace_codex_args(&entry, parent_entry.as_ref(), Some(&settings))
     };
+    ensure_workspace_access_for_workspace(&entry, parent_entry.as_ref()).await?;
     let session =
         spawn_workspace_session(entry.clone(), default_bin, codex_args, codex_home, app).await?;
     state.sessions.lock().await.insert(entry.id, session);

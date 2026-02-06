@@ -2,8 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { useLifeStreamContext } from "../context/LifeStreamContext";
 import { CardErrorBoundary } from "./stream/CardErrorBoundary";
 import { LifeMessageRow } from "./LifeMessageRow";
+import { StickyTaskDock } from "./StickyTaskDock";
+import type { TaskDockItem } from "../types";
+import { cardAnchorId, nodeAnchorId } from "../utils/anchors";
 import { formatPacificTimeLabel, getPacificDateString } from "../../../utils/pacificTime";
 import "./LifeStreamMessageView.css";
+
+type ReviewCandidatesEventDetail = {
+  cardId: string;
+  nodeId?: string;
+};
 
 function parseOccurredAt(value: string): number | null {
   const date = new Date(value);
@@ -45,7 +53,6 @@ type TimelineItemBase =
   | {
       kind: "card";
       id: string;
-      cardIndex: number;
       timeMs: number | null;
     }
   | {
@@ -58,7 +65,6 @@ type TimelineItem =
   | {
       kind: "card";
       id: string;
-      cardIndex: number;
       timeMs: number | null;
       gapPx: number;
       gapMinutes: number;
@@ -72,7 +78,7 @@ type TimelineItem =
     };
 
 export function LifeStreamMessageView() {
-  const { filteredCards, isLoading, cancel, retry, clarify, loadError, currentDate } =
+  const { filteredCards, isLoading, cancel, retry, clarify, restructure, loadError, currentDate } =
     useLifeStreamContext();
 
   const [now, setNow] = useState<Date>(() => new Date());
@@ -123,7 +129,6 @@ export function LifeStreamMessageView() {
       items.push({
         kind: "card",
         id: card.id,
-        cardIndex: index,
         timeMs: parseOccurredAt(card.occurredAt),
       });
     });
@@ -156,6 +161,14 @@ export function LifeStreamMessageView() {
     return enriched;
   }, [filteredCards, isToday, now, nowLabel]);
 
+  const hasCauseEffectCards = useMemo(
+    () =>
+      filteredCards.some(
+        (card) => card.layoutMode === "cause_effect" && Boolean(card.causal),
+      ),
+    [filteredCards],
+  );
+
   const hasCards = filteredCards.length > 0;
   const containerClassName = [
     "messages",
@@ -164,6 +177,48 @@ export function LifeStreamMessageView() {
   ]
     .filter(Boolean)
     .join(" ");
+
+  const jumpToSource = (item: TaskDockItem) => {
+    const cardId = item.sourceCardId;
+    if (!cardId) {
+      return;
+    }
+
+    const row = document.getElementById(cardAnchorId(cardId));
+    if (!row) return;
+
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+
+    const highlightElement = item.sourceNodeId
+      ? document.getElementById(nodeAnchorId(item.sourceNodeId)) ?? row
+      : row;
+    highlightElement.classList.remove("is-jump-highlight");
+    void highlightElement.getBoundingClientRect();
+    highlightElement.classList.add("is-jump-highlight");
+    window.setTimeout(() => {
+      highlightElement.classList.remove("is-jump-highlight");
+    }, 1600);
+  };
+
+  const reviewCandidates = (item: TaskDockItem) => {
+    jumpToSource(item);
+    if (!item.sourceCardId) {
+      return;
+    }
+
+    window.setTimeout(() => {
+      const detail: ReviewCandidatesEventDetail = {
+        cardId: item.sourceCardId as string,
+        nodeId: item.sourceNodeId ?? undefined,
+      };
+      window.dispatchEvent(
+        new CustomEvent<ReviewCandidatesEventDetail>(
+          "life-stream-review-image-candidates",
+          { detail },
+        ),
+      );
+    }, 220);
+  };
 
   return (
     <div className={containerClassName}>
@@ -175,7 +230,11 @@ export function LifeStreamMessageView() {
       {isLoading ? (
         <div className="life-stream-loading">Loading stream...</div>
       ) : hasCards ? (
-        <section className="life-stream-message-list">
+        <section
+          className={`life-stream-message-list${
+            hasCauseEffectCards ? " life-stream-message-list--cause-effect" : ""
+          }`}
+        >
           {timelineItems.map((item) =>
             item.kind === "now" ? (
               <LifeStreamNowMarker
@@ -187,11 +246,11 @@ export function LifeStreamMessageView() {
               <CardErrorBoundary key={item.id} cardId={item.id}>
                 <LifeMessageRow
                   cardId={item.id}
-                  index={item.cardIndex}
                   gapPx={item.gapPx}
                   onCancel={cancel}
                   onRetry={retry}
                   onClarify={clarify}
+                  onRestructure={restructure}
                 />
               </CardErrorBoundary>
             ),
@@ -201,6 +260,12 @@ export function LifeStreamMessageView() {
         <div className="life-stream-empty">
           No entries yet. Start logging your day!
         </div>
+      )}
+      {!isLoading && (
+        <StickyTaskDock
+          onJumpToSource={jumpToSource}
+          onReviewCandidates={reviewCandidates}
+        />
       )}
     </div>
   );

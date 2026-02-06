@@ -20,6 +20,10 @@
   grid-column: 1 / -1;
 }
 
+.app.life-webview .life-stream-shell--task-dock .life-stream-messages {
+  padding-bottom: 10px;
+}
+
 .app.life-webview .life-stream-messages {
   flex: 1;
   overscroll-behavior: contain;
@@ -29,10 +33,56 @@
 .app.life-webview .life-stream-composer-area {
   flex-shrink: 0;
   padding-bottom: max(env(safe-area-inset-bottom), 0px);
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  background: linear-gradient(
+    180deg,
+    rgba(5, 8, 13, 0) 0%,
+    rgba(5, 8, 13, 0.78) 34%,
+    rgba(5, 8, 13, 0.95) 100%
+  );
 }
 
 .app.life-webview .life-stream-message-list {
-  --life-stream-rail-x: 50%;
+  --life-stream-rail-x: 28px;
+}
+
+.app.life-webview .life-sticky-task-dock {
+  margin: 10px var(--main-panel-padding) 6px;
+  margin-bottom: 18px;
+}
+
+.app.life-webview .life-topbar-image-actions__button {
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.42);
+  background: rgba(14, 116, 144, 0.22);
+  color: rgba(224, 242, 254, 0.97);
+  font-size: 11px;
+  line-height: 1;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.app.life-webview .life-topbar-image-actions__button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.app.life-webview .life-stream-backfill-toast {
+  margin: 6px var(--main-panel-padding) 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(125, 211, 252, 0.4);
+  background: rgba(7, 15, 26, 0.78);
+  color: rgba(224, 242, 254, 0.97);
+  font-size: 12px;
+}
+
+.app.life-webview .life-stream-backfill-toast.is-error {
+  border-color: rgba(248, 113, 113, 0.45);
+  color: rgba(254, 202, 202, 0.97);
+  background: rgba(69, 10, 10, 0.52);
 }
 
 .app.life-webview .life-stream-message-list::before,
@@ -52,55 +102,41 @@
 }
 
 .app.life-webview .life-message-row {
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 .app.life-webview .life-message-row__card {
-  justify-content: center;
-  padding-left: 0;
-  padding-right: 0;
-}
-
-.app.life-webview .life-message-row.is-left .life-message-row__card {
   justify-content: flex-start;
-  padding-right: clamp(96px, 14vw, 220px);
-}
-
-.app.life-webview .life-message-row.is-right .life-message-row__card {
-  justify-content: flex-end;
-  padding-left: clamp(96px, 14vw, 220px);
+  padding-left: clamp(58px, 7vw, 92px);
+  padding-right: 8px;
 }
 
 .app.life-webview .life-message-row__time {
-  left: var(--life-stream-rail-x, 50%);
-  transform: translateY(-50%);
+  left: var(--life-stream-rail-x, 28px);
+  transform: translate(12px, -50%);
   margin-left: 0;
-  text-align: center;
-}
-
-.app.life-webview .life-message-row.is-left .life-message-row__time {
-  transform: translate(-100%, -50%);
-  margin-left: -20px;
-  text-align: right;
-}
-
-.app.life-webview .life-message-row.is-right .life-message-row__time {
-  transform: translate(0, -50%);
-  margin-left: 20px;
   text-align: left;
 }
 
 .app.life-webview .life-message-row__dot {
-  left: var(--life-stream-rail-x, 50%);
+  left: var(--life-stream-rail-x, 28px);
   transform: translate(-50%, -50%);
 }
 
 .app.life-webview .bubble.life-card-bubble {
-  max-width: min(720px, 44vw);
+  max-width: min(820px, calc(100vw - 98px));
 }
 
 .app.life-webview .bubble.life-card-bubble.is-expanded {
-  max-width: min(920px, 48vw);
+  max-width: min(980px, calc(100vw - 72px));
+}
+
+.app.life-webview .bubble.life-card-bubble.layout-cause_effect {
+  max-width: min(1240px, calc(100vw - 92px));
+}
+
+.app.life-webview .bubble.life-card-bubble.layout-cause_effect.is-expanded {
+  max-width: min(1320px, calc(100vw - 64px));
 }
 
 .app.life-webview .life-stream-header-controls .life-stream-filters__label {

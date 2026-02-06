@@ -12,6 +12,14 @@ use super::handlers::media::MediaHandler;
 use super::handlers::nutrition::NutritionHandler;
 use super::handlers::query::QueryHandler;
 use super::handlers::thought::ThoughtHandler;
+use super::image_catalog::{
+    load_catalog, primary_asset_path, primary_asset_path_for_context, save_catalog,
+    upsert_context_override, upsert_entity_asset,
+};
+use super::image_manual::{
+    absolute_from_relative, find_image_candidates, import_image_asset, resolve_entity_for_card,
+    sync_entity_file_image, EntityFileSyncOptions, ResolvedEntity,
+};
 use super::images::ImageService;
 use super::mcp_bridge::LifeMcpBridge;
 use super::obsidian::ObsidianIO;
@@ -61,10 +69,30 @@ impl LifeStreamService {
         obsidian_root: Option<&str>,
         date_iso: &str,
     ) -> Result<Vec<StreamCard>, String> {
-        self.obsidian
+        let mut cards = self
+            .obsidian
             .load_cards_for_date(workspace_path, obsidian_root, date_iso)
             .await
-            .map_err(|err| err.to_string())
+            .map_err(|err| err.to_string())?;
+
+        let root = self
+            .obsidian
+            .resolve_root_path(workspace_path, obsidian_root)
+            .map_err(|err| err.to_string())?;
+        if let Ok(catalog) = load_catalog(&root).await {
+            for card in &mut cards {
+                hydrate_card_images_from_catalog(card, &root, &catalog);
+            }
+        }
+
+        {
+            let mut cards_guard = self.cards.lock().await;
+            for card in &cards {
+                cards_guard.insert(card.id.clone(), card.clone());
+            }
+        }
+
+        Ok(cards)
     }
 
     pub async fn submit(
@@ -94,6 +122,8 @@ impl LifeStreamService {
             card_type: CardType::Generic,
             domain: DomainId::General,
             emoji: "📝".to_string(),
+            layout_mode: LayoutMode::CauseEffect,
+            causal: None,
             state: CardState::Pending,
             processing_step: Some("Queued...".to_string()),
             processing_steps: Some(vec!["Queued...".to_string()]),
@@ -254,6 +284,296 @@ impl LifeStreamService {
         );
 
         Ok(())
+    }
+
+    pub async fn restructure(
+        &self,
+        card_id: &str,
+        action: CausalRestructureAction,
+        source_node_ids: Vec<String>,
+        target_mode: Option<String>,
+    ) -> Result<CausalRestructureResult, String> {
+        let existing = {
+            let cards_guard = self.cards.lock().await;
+            cards_guard.get(card_id).cloned().ok_or("card not found")?
+        };
+
+        let causal = existing
+            .causal
+            .clone()
+            .ok_or("card has no causal structure")?;
+
+        let updated_causal = apply_restructure_action(
+            card_id,
+            &causal,
+            action,
+            &source_node_ids,
+            target_mode.as_deref(),
+        );
+
+        let patch = StreamCardPatch {
+            causal: Some(updated_causal),
+            ..Default::default()
+        };
+
+        let version = emit_patch(
+            card_id,
+            patch.clone(),
+            &self.cards,
+            &self.emitter,
+            &self.event_sink,
+        )
+        .await
+        .ok_or("card not found")?;
+
+        Ok(CausalRestructureResult { patch, version })
+    }
+
+    pub async fn image_candidates(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        card_id: &str,
+        node_id: Option<&str>,
+    ) -> Result<ImageCandidateResponse, String> {
+        let card = {
+            let cards_guard = self.cards.lock().await;
+            cards_guard.get(card_id).cloned().ok_or("card not found")?
+        };
+        let root = self
+            .obsidian
+            .resolve_root_path(workspace_path, obsidian_root)
+            .map_err(|err| err.to_string())?;
+        let entity = resolve_entity_for_card(&card, node_id);
+        let candidates =
+            find_image_candidates(&root, &entity, 12, self.tmdb_api_key.as_deref()).await?;
+
+        Ok(ImageCandidateResponse {
+            entity_key: entity.entity_key,
+            entity_name: entity.entity_name,
+            entity_type: entity.entity_type,
+            candidates,
+        })
+    }
+
+    pub async fn attach_image(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        card_id: &str,
+        node_id: Option<&str>,
+        source_path: &str,
+        set_primary: bool,
+        set_context_override: bool,
+        context_hint: Option<&str>,
+        update_entity_file: bool,
+        update_entity_embed: bool,
+    ) -> Result<ImageAttachResult, String> {
+        let existing_card = {
+            let cards_guard = self.cards.lock().await;
+            cards_guard.get(card_id).cloned().ok_or("card not found")?
+        };
+
+        let root = self
+            .obsidian
+            .resolve_root_path(workspace_path, obsidian_root)
+            .map_err(|err| err.to_string())?;
+        let entity = resolve_entity_for_card(&existing_card, node_id);
+
+        let imported_asset =
+            import_image_asset(&root, &entity, std::path::Path::new(source_path)).await?;
+        let mut catalog = load_catalog(&root).await?;
+        let stored_asset = upsert_entity_asset(
+            &mut catalog,
+            &entity.entity_key,
+            &entity.entity_type,
+            &entity.entity_name,
+            &entity.entity_slug,
+            imported_asset,
+            set_primary,
+        );
+        if set_context_override {
+            let hint = context_hint
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+                .or_else(|| entity.context_text.clone());
+            if let Some(hint) = hint.as_deref() {
+                let _ = upsert_context_override(
+                    &mut catalog,
+                    &entity.entity_key,
+                    &stored_asset.id,
+                    hint,
+                    Some("manual_selection".to_string()),
+                );
+            }
+        }
+        save_catalog(&root, &catalog).await?;
+
+        let primary_relative_path = primary_asset_path(&catalog, &entity.entity_key)
+            .ok_or("no primary asset after catalog update")?;
+        if update_entity_file || update_entity_embed {
+            if let Err(error) = sync_entity_file_image(
+                &root,
+                &entity,
+                &primary_relative_path,
+                EntityFileSyncOptions {
+                    update_frontmatter: update_entity_file,
+                    update_embed_block: update_entity_embed,
+                },
+            )
+            .await
+            {
+                eprintln!(
+                    "life_stream: failed to sync entity image metadata for {}: {}",
+                    entity.entity_key, error
+                );
+            }
+        }
+        let image = CardImage {
+            url: Some(
+                absolute_from_relative(&root, &primary_relative_path)
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            status: ImageStatus::Ready,
+            source: Some("manual_local".to_string()),
+        };
+
+        let patch = if let Some(target_node_id) = node_id {
+            let mut causal = existing_card
+                .causal
+                .clone()
+                .ok_or("card has no causal nodes")?;
+            let mut matched = false;
+            for node in causal
+                .left_nodes
+                .iter_mut()
+                .chain(causal.right_nodes.iter_mut())
+            {
+                if node.id != target_node_id {
+                    continue;
+                }
+                node.image = Some(image.clone());
+                if node.entity.is_none() {
+                    node.entity = Some(EntityRef {
+                        entity_type: entity.entity_type.clone(),
+                        id: None,
+                        name: entity.entity_name.clone(),
+                        link: Some(entity_link_for(&entity.entity_type, &entity.entity_name)),
+                    });
+                }
+                matched = true;
+                break;
+            }
+            if !matched {
+                return Err("target node not found on card".to_string());
+            }
+            StreamCardPatch {
+                causal: Some(causal),
+                image: Some(image.clone()),
+                ..Default::default()
+            }
+        } else {
+            let mut patch = StreamCardPatch {
+                image: Some(image.clone()),
+                ..Default::default()
+            };
+
+            if let Some(mut causal) = existing_card.causal.clone() {
+                if let Some(first_node) = causal.right_nodes.first_mut() {
+                    first_node.image = Some(image.clone());
+                    if first_node.entity.is_none() {
+                        first_node.entity = Some(EntityRef {
+                            entity_type: entity.entity_type.clone(),
+                            id: None,
+                            name: entity.entity_name.clone(),
+                            link: Some(entity_link_for(&entity.entity_type, &entity.entity_name)),
+                        });
+                    }
+                }
+                patch.causal = Some(causal);
+            }
+
+            patch
+        };
+
+        let version = emit_patch(
+            card_id,
+            patch.clone(),
+            &self.cards,
+            &self.emitter,
+            &self.event_sink,
+        )
+        .await
+        .ok_or("card not found")?;
+
+        Ok(ImageAttachResult {
+            patch,
+            version,
+            entity_key: entity.entity_key,
+            primary_relative_path,
+            asset: stored_asset,
+        })
+    }
+
+    pub async fn backfill_entity_images(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        update_embed_block: bool,
+    ) -> Result<ImageBackfillSummary, String> {
+        let root = self
+            .obsidian
+            .resolve_root_path(workspace_path, obsidian_root)
+            .map_err(|err| err.to_string())?;
+        let catalog = load_catalog(&root).await?;
+
+        let mut summary = ImageBackfillSummary {
+            updated: 0,
+            skipped: 0,
+            failed: 0,
+            errors: Vec::new(),
+        };
+
+        for (entity_key, entity_entry) in &catalog.entities {
+            let Some(relative_path) = primary_asset_path(&catalog, entity_key) else {
+                summary.skipped += 1;
+                continue;
+            };
+
+            let entity = ResolvedEntity {
+                entity_key: entity_key.clone(),
+                entity_type: entity_entry.entity_type.clone(),
+                entity_name: entity_entry.entity_name.clone(),
+                entity_slug: entity_entry.entity_slug.clone(),
+                entity_link: Some(entity_link_for(
+                    entity_entry.entity_type.as_str(),
+                    entity_entry.entity_name.as_str(),
+                )),
+                context_text: None,
+            };
+            match sync_entity_file_image(
+                &root,
+                &entity,
+                &relative_path,
+                EntityFileSyncOptions {
+                    update_frontmatter: true,
+                    update_embed_block,
+                },
+            )
+            .await
+            {
+                Ok(true) => summary.updated += 1,
+                Ok(false) => summary.skipped += 1,
+                Err(error) => {
+                    summary.failed += 1;
+                    summary.errors.push(error);
+                }
+            }
+        }
+
+        Ok(summary)
     }
 
     fn emit_event(&self, event: LifeStreamEvent) {
@@ -431,6 +751,12 @@ fn apply_patch_to_card(card: &mut StreamCard, patch: &StreamCardPatch) {
     if let Some(expanded) = &patch.expanded {
         card.expanded = Some(expanded.clone());
     }
+    if let Some(layout_mode) = &patch.layout_mode {
+        card.layout_mode = layout_mode.clone();
+    }
+    if let Some(causal) = &patch.causal {
+        card.causal = Some(causal.clone());
+    }
     if let Some(options) = &patch.clarification_options {
         if options.is_empty() {
             card.clarification_options = None;
@@ -480,7 +806,14 @@ async fn process_card(
 
     let mut enriched = match card_type {
         CardType::Meal => {
-            emit_step(card_id, "Looking up nutrition...", cards, emitter, event_sink).await;
+            emit_step(
+                card_id,
+                "Looking up nutrition...",
+                cards,
+                emitter,
+                event_sink,
+            )
+            .await;
             match handle_nutrition(
                 card_id,
                 input,
@@ -516,13 +849,7 @@ async fn process_card(
     }
 
     if let Some(mcp_output) = maybe_call_mcp_tool(
-        mcp_bridge,
-        card_id,
-        &card_type,
-        input,
-        cards,
-        emitter,
-        event_sink,
+        mcp_bridge, card_id, &card_type, input, cards, emitter, event_sink,
     )
     .await
     {
@@ -547,6 +874,8 @@ async fn process_card(
             .map_err(|err| err.to_string())?;
     }
 
+    let causal = build_causal_content(card_id, &card_type, input, occurred_at, &enriched);
+
     let mut cards_guard = cards.lock().await;
     if let Some(card) = cards_guard.get_mut(card_id) {
         if card.state == CardState::Cancelled {
@@ -556,6 +885,8 @@ async fn process_card(
         card.card_type = card_type;
         card.domain = domain;
         card.emoji = emoji;
+        card.layout_mode = LayoutMode::CauseEffect;
+        card.causal = Some(causal);
         card.title = enriched.title;
         card.subtitle = enriched.subtitle;
         card.summary = enriched.summary;
@@ -661,7 +992,14 @@ async fn maybe_call_mcp_tool(
 
     let (tool, params) = mcp_tool_for_card(card_type, input)?;
 
-    emit_step(card_id, "Syncing with life-mcp...", cards, emitter, event_sink).await;
+    emit_step(
+        card_id,
+        "Syncing with life-mcp...",
+        cards,
+        emitter,
+        event_sink,
+    )
+    .await;
 
     let Ok(result) = mcp_bridge.call_tool(&tool, params).await else {
         return None;
@@ -675,10 +1013,7 @@ async fn maybe_call_mcp_tool(
     Some(McpToolOutput { tool, text, raw })
 }
 
-fn mcp_tool_for_card(
-    card_type: &CardType,
-    input: &str,
-) -> Option<(String, serde_json::Value)> {
+fn mcp_tool_for_card(card_type: &CardType, input: &str) -> Option<(String, serde_json::Value)> {
     match card_type {
         CardType::Meal => {
             let mut payload = serde_json::json!({ "input": input });
@@ -812,9 +1147,7 @@ fn extract_mcp_text(value: &serde_json::Value) -> Option<String> {
 }
 
 fn apply_mcp_output(enriched: &mut EnrichedData, output: McpToolOutput, input: &str) {
-    let text = output
-        .text
-        .unwrap_or_else(|| output.raw.to_string());
+    let text = output.text.unwrap_or_else(|| output.raw.to_string());
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return;
@@ -884,16 +1217,7 @@ pub(crate) fn detect_intent(input: &str) -> (CardType, DomainId, String) {
     }
 
     let media_keywords = [
-        "watched",
-        "watching",
-        "watch",
-        "movie",
-        "show",
-        "anime",
-        "film",
-        "played",
-        "game",
-        "read",
+        "watched", "watching", "watch", "movie", "show", "anime", "film", "played", "game", "read",
         "book",
     ];
     if media_keywords.iter().any(|kw| lower.contains(kw)) {
@@ -1309,6 +1633,828 @@ pub(crate) struct EnrichedData {
     pub(crate) image: Option<CardImage>,
     pub(crate) expanded: Option<ExpandedContent>,
     pub(crate) image_lookup: Option<ImageLookup>,
+}
+
+const DEFAULT_VISIBLE_RIGHT_COUNT: usize = 3;
+const DEFAULT_TOP_LINK_LIMIT: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CausalFrameProfile {
+    CauseEffect,
+    ActionReward,
+    ClaimResponse,
+}
+
+fn causal_frame_profile(card_type: &CardType) -> CausalFrameProfile {
+    match card_type {
+        CardType::DeliveryOrder | CardType::DeliverySession | CardType::Meal => {
+            CausalFrameProfile::ActionReward
+        }
+        CardType::Thought | CardType::Query | CardType::MediaAdd | CardType::Music => {
+            CausalFrameProfile::ClaimResponse
+        }
+        _ => CausalFrameProfile::CauseEffect,
+    }
+}
+
+fn resolve_causal_frame_profile(
+    card_type: &CardType,
+    input: &str,
+    enriched: &EnrichedData,
+) -> CausalFrameProfile {
+    let explicit = causal_frame_profile(card_type);
+    if explicit != CausalFrameProfile::CauseEffect {
+        return explicit;
+    }
+
+    if looks_like_claim_or_question_input(input) {
+        return CausalFrameProfile::ClaimResponse;
+    }
+
+    if expanded_contains_markdown_headings(enriched) {
+        return CausalFrameProfile::ClaimResponse;
+    }
+
+    CausalFrameProfile::CauseEffect
+}
+
+pub(crate) fn build_causal_content(
+    card_id: &str,
+    card_type: &CardType,
+    input: &str,
+    occurred_at: &str,
+    enriched: &EnrichedData,
+) -> CausalCardContent {
+    let frame = resolve_causal_frame_profile(card_type, input, enriched);
+    let left_node_id = format!("{card_id}:left:0");
+    let left_text = if input.trim().is_empty() {
+        enriched.title.clone()
+    } else {
+        input.trim().to_string()
+    };
+    let left_entity = enriched
+        .entities
+        .as_ref()
+        .and_then(|entities| entities.first())
+        .cloned();
+
+    let left_nodes = vec![CausalNode {
+        id: left_node_id.clone(),
+        text: left_text,
+        role: Some(infer_left_node_role(frame, card_type, input)),
+        image: None,
+        entity: left_entity,
+        occurred_at: Some(occurred_at.to_string()),
+    }];
+
+    let mut right_nodes = collect_right_nodes(card_id, frame, enriched);
+
+    if right_nodes.is_empty() {
+        let fallback_text = enriched
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| truncate_summary(value, 200))
+            .or_else(|| {
+                enriched
+                    .subtitle
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string())
+            })
+            .unwrap_or_else(|| enriched.title.clone());
+
+        right_nodes.push(CausalNode {
+            id: format!("{card_id}:right:0"),
+            text: fallback_text,
+            role: Some(infer_right_node_role(frame)),
+            image: None,
+            entity: None,
+            occurred_at: None,
+        });
+    }
+
+    if let Some(image) = enriched.image.clone() {
+        if let Some(node) = right_nodes.first_mut() {
+            if node.image.is_none() {
+                node.image = Some(image);
+            }
+        }
+    }
+
+    if let Some(entity) = enriched
+        .entities
+        .as_ref()
+        .and_then(|entities| entities.first())
+        .cloned()
+    {
+        if let Some(node) = right_nodes.first_mut() {
+            if node.entity.is_none() {
+                node.entity = Some(entity);
+            }
+        }
+    }
+
+    let links = right_nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| CausalLink {
+            id: Some(format!("{card_id}:link:{index}")),
+            from_id: left_node_id.clone(),
+            to_id: node.id.clone(),
+            label: None,
+            strength: Some(if index < DEFAULT_TOP_LINK_LIMIT {
+                1.0
+            } else {
+                0.55
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    let has_dense_right_nodes = right_nodes.len() > DEFAULT_VISIBLE_RIGHT_COUNT;
+    let has_dense_links = links.len() > DEFAULT_TOP_LINK_LIMIT;
+    let layout = if has_dense_right_nodes || has_dense_links {
+        Some(CausalLayoutState {
+            visible_right_count: has_dense_right_nodes
+                .then_some(DEFAULT_VISIBLE_RIGHT_COUNT as u32),
+            top_link_limit: has_dense_links.then_some(DEFAULT_TOP_LINK_LIMIT as u32),
+            expanded: has_dense_right_nodes.then_some(false),
+        })
+    } else {
+        None
+    };
+
+    CausalCardContent {
+        left_nodes,
+        right_nodes,
+        links,
+        layout,
+    }
+}
+
+fn collect_right_nodes(
+    card_id: &str,
+    frame: CausalFrameProfile,
+    enriched: &EnrichedData,
+) -> Vec<CausalNode> {
+    let mut right_nodes = Vec::new();
+    let role = infer_right_node_role(frame);
+    let mut index = 0usize;
+
+    if let Some(expanded) = &enriched.expanded {
+        for section in &expanded.sections {
+            let title = section.title.trim();
+            let body = section.body.trim();
+            if title.is_empty() && body.is_empty() {
+                continue;
+            }
+
+            if title.eq_ignore_ascii_case("completed orders") {
+                for row in extract_markdown_table_rows(body) {
+                    right_nodes.push(CausalNode {
+                        id: format!("{card_id}:right:{index}"),
+                        text: row,
+                        role: Some(CausalNodeRole::Reward),
+                        image: None,
+                        entity: None,
+                        occurred_at: None,
+                    });
+                    index += 1;
+                }
+                continue;
+            }
+
+            if frame == CausalFrameProfile::ClaimResponse {
+                let heading_nodes = extract_markdown_heading_nodes(body);
+                if !heading_nodes.is_empty() {
+                    for heading in heading_nodes {
+                        right_nodes.push(CausalNode {
+                            id: format!("{card_id}:right:{index}"),
+                            text: heading,
+                            role: Some(role.clone()),
+                            image: None,
+                            entity: None,
+                            occurred_at: None,
+                        });
+                        index += 1;
+                    }
+                    continue;
+                }
+
+                let emphasized_nodes = extract_emphasized_claim_lines(body);
+                if !emphasized_nodes.is_empty() {
+                    for item in emphasized_nodes {
+                        right_nodes.push(CausalNode {
+                            id: format!("{card_id}:right:{index}"),
+                            text: item,
+                            role: Some(role.clone()),
+                            image: None,
+                            entity: None,
+                            occurred_at: None,
+                        });
+                        index += 1;
+                    }
+                    continue;
+                }
+            } else {
+                let bullet_items = extract_bullet_lines(body);
+                if bullet_items.len() > 1 {
+                    for item in bullet_items {
+                        right_nodes.push(CausalNode {
+                            id: format!("{card_id}:right:{index}"),
+                            text: if title.is_empty() {
+                                item
+                            } else {
+                                format!("{title}: {item}")
+                            },
+                            role: Some(role.clone()),
+                            image: None,
+                            entity: None,
+                            occurred_at: None,
+                        });
+                        index += 1;
+                    }
+                    continue;
+                }
+            }
+
+            let summary = summarize_section_body(body);
+            if !summary.is_empty() {
+                let include_title_prefix = !title.is_empty()
+                    && !title.eq_ignore_ascii_case("codex response")
+                    && !title.eq_ignore_ascii_case("response");
+                right_nodes.push(CausalNode {
+                    id: format!("{card_id}:right:{index}"),
+                    text: if include_title_prefix {
+                        format!("{title}: {summary}")
+                    } else {
+                        summary
+                    },
+                    role: Some(role.clone()),
+                    image: None,
+                    entity: None,
+                    occurred_at: None,
+                });
+                index += 1;
+            }
+        }
+    }
+
+    right_nodes
+}
+
+fn infer_left_node_role(
+    frame: CausalFrameProfile,
+    card_type: &CardType,
+    input: &str,
+) -> CausalNodeRole {
+    match frame {
+        CausalFrameProfile::ActionReward => CausalNodeRole::Action,
+        CausalFrameProfile::ClaimResponse => {
+            if matches!(card_type, CardType::Query) || input.trim().contains('?') {
+                CausalNodeRole::Question
+            } else {
+                CausalNodeRole::Cause
+            }
+        }
+        CausalFrameProfile::CauseEffect => CausalNodeRole::Cause,
+    }
+}
+
+fn infer_right_node_role(frame: CausalFrameProfile) -> CausalNodeRole {
+    match frame {
+        CausalFrameProfile::ActionReward => CausalNodeRole::Reward,
+        CausalFrameProfile::ClaimResponse => CausalNodeRole::Response,
+        CausalFrameProfile::CauseEffect => CausalNodeRole::Effect,
+    }
+}
+
+fn looks_like_claim_or_question_input(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains('?') {
+        return true;
+    }
+
+    let lower = trimmed.to_lowercase();
+    [
+        "i think",
+        "i feel",
+        "i believe",
+        "favorite",
+        "should",
+        "why",
+        "how",
+        "what if",
+        "would it",
+        "could it",
+        "do you think",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn expanded_contains_markdown_headings(enriched: &EnrichedData) -> bool {
+    enriched
+        .expanded
+        .as_ref()
+        .map(|expanded| {
+            expanded.sections.iter().any(|section| {
+                section
+                    .body
+                    .lines()
+                    .any(|line| line.trim_start().starts_with('#'))
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn extract_markdown_heading_nodes(body: &str) -> Vec<String> {
+    let mut headings = Vec::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('#') {
+            continue;
+        }
+
+        let heading_text = trimmed.trim_start_matches('#').trim();
+        if heading_text.is_empty() {
+            continue;
+        }
+
+        let cleaned = heading_text.trim_matches('*').trim_matches('_').trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+
+        headings.push(truncate_summary(cleaned, 140));
+    }
+
+    headings
+}
+
+fn extract_emphasized_claim_lines(body: &str) -> Vec<String> {
+    let mut claims = Vec::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if !(trimmed.starts_with("**") && trimmed.ends_with("**")) {
+            continue;
+        }
+
+        let inner = trimmed
+            .trim_start_matches("**")
+            .trim_end_matches("**")
+            .trim();
+        if inner.is_empty() {
+            continue;
+        }
+
+        let word_count = inner
+            .split_whitespace()
+            .filter(|value| !value.trim().is_empty())
+            .count();
+        if word_count < 4 {
+            continue;
+        }
+
+        claims.push(truncate_summary(inner, 160));
+    }
+
+    claims
+}
+
+fn summarize_section_body(body: &str) -> String {
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed == "---" {
+            continue;
+        }
+        if trimmed.starts_with('|') {
+            continue;
+        }
+
+        let cleaned = trimmed.trim_start_matches('#').trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+
+        return truncate_summary(cleaned, 200);
+    }
+
+    truncate_summary(body.trim(), 200)
+}
+
+fn extract_markdown_table_rows(body: &str) -> Vec<String> {
+    let mut rows = Vec::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('|') {
+            continue;
+        }
+
+        let cells = trimmed
+            .trim_matches('|')
+            .split('|')
+            .map(|cell| cell.trim())
+            .filter(|cell| !cell.is_empty())
+            .collect::<Vec<_>>();
+
+        if cells.is_empty() {
+            continue;
+        }
+        if cells.iter().all(|cell| {
+            cell.chars()
+                .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+        }) {
+            continue;
+        }
+
+        rows.push(
+            cells
+                .iter()
+                .take(4)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" • "),
+        );
+    }
+
+    if rows.len() > 1 {
+        let header = rows[0].to_lowercase();
+        if header.contains("order")
+            || header.contains("merchant")
+            || header.contains("pickup")
+            || header.contains("dropoff")
+            || header.contains("payout")
+        {
+            rows.remove(0);
+        }
+    }
+
+    rows
+}
+
+fn extract_bullet_lines(body: &str) -> Vec<String> {
+    let mut bullets = Vec::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let bullet = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .map(|item| item.trim().to_string())
+            .or_else(|| {
+                let (prefix, rest) = trimmed.split_once(". ")?;
+                if prefix.chars().all(|ch| ch.is_ascii_digit()) {
+                    Some(rest.trim().to_string())
+                } else {
+                    None
+                }
+            });
+
+        if let Some(item) = bullet {
+            if !item.is_empty() {
+                bullets.push(item);
+            }
+        }
+    }
+
+    bullets
+}
+
+pub(crate) fn apply_restructure_action(
+    card_id: &str,
+    causal: &CausalCardContent,
+    action: CausalRestructureAction,
+    source_node_ids: &[String],
+    target_mode: Option<&str>,
+) -> CausalCardContent {
+    let mut next = causal.clone();
+
+    match action {
+        CausalRestructureAction::SplitCause => {
+            split_cause_nodes(card_id, &mut next, source_node_ids);
+            relink_causal_edges(card_id, &mut next);
+        }
+        CausalRestructureAction::MergeEffects => {
+            merge_effect_nodes(card_id, &mut next, source_node_ids);
+            relink_causal_edges(card_id, &mut next);
+        }
+        CausalRestructureAction::RelinkArrows => {
+            relink_causal_edges(card_id, &mut next);
+        }
+        CausalRestructureAction::ReframeMode => {
+            reframe_causal_roles(&mut next, target_mode);
+        }
+    }
+
+    next
+}
+
+fn split_cause_nodes(card_id: &str, causal: &mut CausalCardContent, source_node_ids: &[String]) {
+    if causal.left_nodes.is_empty() {
+        return;
+    }
+
+    let target_index = source_node_ids
+        .first()
+        .and_then(|target| causal.left_nodes.iter().position(|node| node.id == *target))
+        .unwrap_or(0);
+    let source = causal.left_nodes.get(target_index).cloned();
+    let Some(source) = source else {
+        return;
+    };
+
+    let segments = split_cause_text(&source.text);
+    if segments.len() < 2 {
+        return;
+    }
+
+    let mut next_left_nodes = Vec::new();
+    for (index, node) in causal.left_nodes.iter().enumerate() {
+        if index != target_index {
+            next_left_nodes.push(node.clone());
+            continue;
+        }
+
+        for (segment_index, segment) in segments.iter().enumerate() {
+            next_left_nodes.push(CausalNode {
+                id: format!("{card_id}:left:{segment_index}"),
+                text: segment.clone(),
+                role: source.role.clone(),
+                image: source.image.clone(),
+                entity: source.entity.clone(),
+                occurred_at: source.occurred_at.clone(),
+            });
+        }
+    }
+
+    if !next_left_nodes.is_empty() {
+        causal.left_nodes = next_left_nodes;
+    }
+}
+
+fn split_cause_text(text: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+
+    for line in text
+        .split(['\n', ';'])
+        .flat_map(|chunk| chunk.split(". "))
+        .flat_map(|chunk| chunk.split(" and "))
+    {
+        let normalized = line.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        segments.push(truncate_summary(normalized, 140));
+    }
+
+    if segments.len() > 4 {
+        segments.truncate(4);
+    }
+
+    segments
+}
+
+fn merge_effect_nodes(card_id: &str, causal: &mut CausalCardContent, source_node_ids: &[String]) {
+    if causal.right_nodes.len() < 2 {
+        return;
+    }
+
+    let merge_indices = if source_node_ids.len() >= 2 {
+        let mut indices = source_node_ids
+            .iter()
+            .filter_map(|id| causal.right_nodes.iter().position(|node| node.id == *id))
+            .collect::<Vec<_>>();
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    } else {
+        vec![0, 1]
+    };
+
+    if merge_indices.len() < 2 {
+        return;
+    }
+
+    let first = merge_indices[0];
+    let second = merge_indices[1];
+    if first >= causal.right_nodes.len() || second >= causal.right_nodes.len() {
+        return;
+    }
+
+    let first_node = causal.right_nodes[first].clone();
+    let second_node = causal.right_nodes[second].clone();
+
+    let merged_text = format!(
+        "{}\n• {}",
+        first_node.text.trim(),
+        second_node.text.trim()
+    );
+
+    let merged_node = CausalNode {
+        id: format!("{card_id}:right:merged"),
+        text: truncate_summary(&merged_text, 260),
+        role: first_node.role.clone().or(second_node.role.clone()),
+        image: first_node.image.clone().or(second_node.image.clone()),
+        entity: first_node.entity.clone().or(second_node.entity.clone()),
+        occurred_at: first_node
+            .occurred_at
+            .clone()
+            .or(second_node.occurred_at.clone()),
+    };
+
+    let mut next_right_nodes = Vec::new();
+    for (index, node) in causal.right_nodes.iter().enumerate() {
+        if index == first {
+            next_right_nodes.push(merged_node.clone());
+            continue;
+        }
+        if index == second {
+            continue;
+        }
+        next_right_nodes.push(node.clone());
+    }
+    causal.right_nodes = next_right_nodes;
+}
+
+fn relink_causal_edges(card_id: &str, causal: &mut CausalCardContent) {
+    if causal.left_nodes.is_empty() || causal.right_nodes.is_empty() {
+        causal.links.clear();
+        return;
+    }
+
+    let mut links = Vec::new();
+    let left_count = causal.left_nodes.len();
+    for (right_index, right_node) in causal.right_nodes.iter().enumerate() {
+        let left_index = right_index % left_count;
+        let left_node = &causal.left_nodes[left_index];
+        links.push(CausalLink {
+            id: Some(format!("{card_id}:link:{right_index}")),
+            from_id: left_node.id.clone(),
+            to_id: right_node.id.clone(),
+            label: None,
+            strength: Some(if right_index < DEFAULT_TOP_LINK_LIMIT {
+                1.0
+            } else {
+                0.55
+            }),
+        });
+    }
+    causal.links = links;
+}
+
+fn reframe_causal_roles(causal: &mut CausalCardContent, target_mode: Option<&str>) {
+    let desired = target_mode.unwrap_or_else(|| {
+        if causal
+            .right_nodes
+            .iter()
+            .any(|node| node.role == Some(CausalNodeRole::Reward))
+        {
+            "cause_effect"
+        } else {
+            "action_reward"
+        }
+    });
+
+    if desired.eq_ignore_ascii_case("cause_effect") {
+        for node in &mut causal.left_nodes {
+            node.role = match node.role.clone() {
+                Some(CausalNodeRole::Action) => Some(CausalNodeRole::Cause),
+                Some(CausalNodeRole::Question) => Some(CausalNodeRole::Cause),
+                other => other,
+            };
+        }
+        for node in &mut causal.right_nodes {
+            node.role = match node.role.clone() {
+                Some(CausalNodeRole::Reward) => Some(CausalNodeRole::Effect),
+                Some(CausalNodeRole::Response) => Some(CausalNodeRole::Effect),
+                other => other,
+            };
+        }
+        return;
+    }
+
+    for node in &mut causal.left_nodes {
+        node.role = match node.role.clone() {
+            Some(CausalNodeRole::Cause) => Some(CausalNodeRole::Action),
+            Some(CausalNodeRole::Question) => Some(CausalNodeRole::Action),
+            other => other,
+        };
+    }
+    for node in &mut causal.right_nodes {
+        node.role = match node.role.clone() {
+            Some(CausalNodeRole::Effect) => Some(CausalNodeRole::Reward),
+            Some(CausalNodeRole::Response) => Some(CausalNodeRole::Reward),
+            other => other,
+        };
+    }
+}
+
+fn hydrate_card_images_from_catalog(
+    card: &mut StreamCard,
+    obsidian_root: &std::path::Path,
+    catalog: &super::image_catalog::ImageCatalog,
+) {
+    if !is_image_ready(card.image.as_ref()) {
+        let resolved = resolve_entity_for_card(card, None);
+        if let Some(relative_path) = primary_asset_path_for_context(
+            catalog,
+            &resolved.entity_key,
+            resolved.context_text.as_deref(),
+        ) {
+            card.image = Some(CardImage {
+                url: Some(
+                    absolute_from_relative(obsidian_root, &relative_path)
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                status: ImageStatus::Ready,
+                source: Some("catalog".to_string()),
+            });
+        }
+    }
+
+    let mut node_ids = Vec::new();
+    if let Some(causal) = card.causal.as_ref() {
+        node_ids.extend(causal.left_nodes.iter().map(|node| node.id.clone()));
+        node_ids.extend(causal.right_nodes.iter().map(|node| node.id.clone()));
+    }
+
+    for node_id in node_ids {
+        let resolved = resolve_entity_for_card(card, Some(&node_id));
+        let Some(relative_path) = primary_asset_path_for_context(
+            catalog,
+            &resolved.entity_key,
+            resolved.context_text.as_deref(),
+        ) else {
+            continue;
+        };
+        let image = CardImage {
+            url: Some(
+                absolute_from_relative(obsidian_root, &relative_path)
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            status: ImageStatus::Ready,
+            source: Some("catalog".to_string()),
+        };
+
+        if let Some(causal) = card.causal.as_mut() {
+            if let Some(node) = causal
+                .left_nodes
+                .iter_mut()
+                .chain(causal.right_nodes.iter_mut())
+                .find(|node| node.id == node_id)
+            {
+                if !is_image_ready(node.image.as_ref()) {
+                    node.image = Some(image);
+                }
+                if node.entity.is_none() {
+                    node.entity = Some(EntityRef {
+                        entity_type: resolved.entity_type.clone(),
+                        id: None,
+                        name: resolved.entity_name.clone(),
+                        link: Some(entity_link_for(
+                            resolved.entity_type.as_str(),
+                            resolved.entity_name.as_str(),
+                        )),
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn is_image_ready(image: Option<&CardImage>) -> bool {
+    image
+        .is_some_and(|value| value.status == ImageStatus::Ready && value.url.is_some())
+}
+
+fn entity_link_for(entity_type: &str, entity_name: &str) -> String {
+    let folder = match entity_type {
+        "media" => "Entities/Media",
+        "food" => "Entities/Food",
+        "delivery" => "Entities/Delivery",
+        "fitness" => "Entities/Fitness",
+        "finance" => "Entities/Finance",
+        "people" => "Entities/People",
+        "geography" => "Entities/Topics",
+        "youtube" => "Entities/YouTube",
+        _ => "Entities/Notes",
+    };
+    format!("[[{}/{}]]", folder, entity_name)
 }
 
 async fn is_cancelled(card_id: &str, cancelled_cards: &Arc<Mutex<HashSet<String>>>) -> bool {

@@ -2,24 +2,30 @@ import { useMemo, useSyncExternalStore } from "react";
 import { streamStore } from "../state/streamStore";
 import { CardBubble } from "./stream/CardBubble";
 import { formatPacificTimeLabel } from "../../../utils/pacificTime";
+import { cardAnchorId } from "../utils/anchors";
+import type { CausalRestructureAction } from "../types";
 import "./LifeMessageRow.css";
 
 type LifeMessageRowProps = {
   cardId: string;
-  index: number;
   gapPx?: number;
   onCancel: (cardId: string) => void;
   onRetry: (cardId: string) => void;
   onClarify: (cardId: string, optionId: string) => void;
+  onRestructure: (
+    cardId: string,
+    action: CausalRestructureAction,
+    options?: { sourceNodeIds?: string[]; targetMode?: "cause_effect" | "action_reward" },
+  ) => void;
 };
 
 export function LifeMessageRow({
   cardId,
-  index,
   gapPx,
   onCancel,
   onRetry,
   onClarify,
+  onRestructure,
 }: LifeMessageRowProps) {
   const card = useSyncExternalStore(
     (listener) => streamStore.subscribeToCard(cardId, listener),
@@ -32,15 +38,18 @@ export function LifeMessageRow({
     return formatPacificTimeLabel(card.occurredAt);
   }, [card]);
 
+  const isCauseEffect = Boolean(
+    card?.layoutMode === "cause_effect" && card?.causal,
+  );
+
   if (!card) {
     return null;
   }
 
-  const sideClass = index % 2 === 0 ? "is-left" : "is-right";
-
   return (
     <div
-      className={`life-message-row ${sideClass}`}
+      className={`life-message-row${isCauseEffect ? " life-message-row--cause-effect" : ""}`}
+      id={cardAnchorId(cardId)}
       style={gapPx ? { marginTop: `${gapPx}px` } : undefined}
     >
       <div className="life-message-row__time" aria-hidden="true">
@@ -53,6 +62,7 @@ export function LifeMessageRow({
           onCancel={onCancel}
           onRetry={onRetry}
           onClarify={onClarify}
+          onRestructure={onRestructure}
         />
       </div>
     </div>

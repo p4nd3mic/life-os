@@ -36,10 +36,12 @@ mod storage;
 mod types;
 #[path = "../utils.rs"]
 mod utils;
+#[path = "../workspace_access.rs"]
+mod workspace_access;
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use base64::{engine::general_purpose::STANDARD, Engine};
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs::File;
@@ -69,11 +71,11 @@ use backend::app_server::{spawn_workspace_session, WorkspaceSession};
 use backend::events::{AppServerEvent, EventSink, TerminalOutput};
 use browser::service::BrowserService;
 use codex_params::{build_turn_start_params, build_user_input};
-use life_stream::{LifeStreamEvent, LifeStreamService};
 use git_utils::{
     checkout_branch, commit_to_entry, diff_patch_to_string, diff_stats_for_path,
     list_git_roots as scan_git_roots, parse_github_repo, resolve_git_root,
 };
+use life_stream::{LifeStreamEvent, LifeStreamService};
 use memory::MemoryService;
 use skills::skill_md::{parse_skill_md, validate_skill};
 use storage::{
@@ -216,8 +218,7 @@ impl DaemonState {
             None
         };
         let tmdb_key = resolve_api_key(app_settings.tmdb_api_key.as_str(), "TMDB_API_KEY");
-        let life_stream_log: Arc<Mutex<VecDeque<String>>> =
-            Arc::new(Mutex::new(VecDeque::new()));
+        let life_stream_log: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         let mut life_stream_service = LifeStreamService::new(None, tmdb_key);
         let log_sink = life_stream_log.clone();
         let event_sink_clone = event_sink.clone();
@@ -947,6 +948,8 @@ impl DaemonState {
             let settings = self.app_settings.lock().await;
             codex_args::resolve_workspace_codex_args(&entry, parent_entry.as_ref(), Some(&settings))
         };
+        workspace_access::ensure_workspace_access_for_workspace(&entry, parent_entry.as_ref())
+            .await?;
         let session = spawn_workspace_session(
             entry,
             default_bin,
@@ -1382,6 +1385,152 @@ impl DaemonState {
             )
             .await?;
         Ok(json!({ "ok": true }))
+    }
+
+    async fn life_stream_task_dock_load(&self, workspace_id: String) -> Result<Value, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+        let payload = life_stream::task_dock::load_task_dock(&entry).await?;
+        serde_json::to_value(payload).map_err(|error| error.to_string())
+    }
+
+    async fn life_stream_task_dock_save(
+        &self,
+        workspace_id: String,
+        payload: life_stream::TaskDockPayload,
+    ) -> Result<Value, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+        life_stream::task_dock::save_task_dock(&entry, &payload).await?;
+        Ok(json!({ "ok": true }))
+    }
+
+    async fn life_stream_restructure(
+        &self,
+        _workspace_id: String,
+        card_id: String,
+        action: life_stream::CausalRestructureAction,
+        source_node_ids: Vec<String>,
+        target_mode: Option<String>,
+    ) -> Result<Value, String> {
+        let life_stream = self.life_stream_service.lock().await;
+        let result = life_stream
+            .restructure(&card_id, action, source_node_ids, target_mode)
+            .await?;
+        serde_json::to_value(result).map_err(|error| error.to_string())
+    }
+
+    async fn life_stream_image_candidates(
+        &self,
+        workspace_id: String,
+        card_id: String,
+        node_id: Option<String>,
+    ) -> Result<Value, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+        let obsidian_root = entry.settings.obsidian_root.as_deref();
+        let life_stream = self.life_stream_service.lock().await;
+        let response = life_stream
+            .image_candidates(&entry.path, obsidian_root, &card_id, node_id.as_deref())
+            .await?;
+        if response
+            .candidates
+            .iter()
+            .any(|candidate| candidate.source_kind.starts_with("provider_"))
+        {
+            let now = chrono::Utc::now().to_rfc3339();
+            let item = life_stream::TaskDockItem {
+                id: format!("task_{}", uuid::Uuid::new_v4().simple()),
+                key: format!(
+                    "review-image-candidates:{}:{}",
+                    card_id,
+                    node_id.as_deref().unwrap_or("card")
+                ),
+                text: format!("Review image candidates for {}", response.entity_name),
+                kind: life_stream::TaskDockItemKind::Reminder,
+                completed: false,
+                created_at: now.clone(),
+                updated_at: now,
+                target_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
+                source_card_id: Some(card_id.clone()),
+                source_node_id: node_id.clone(),
+            };
+            let _ = life_stream::task_dock::upsert_task_dock_item(&entry, item).await;
+        }
+        serde_json::to_value(response).map_err(|error| error.to_string())
+    }
+
+    async fn life_stream_image_attach(
+        &self,
+        workspace_id: String,
+        card_id: String,
+        node_id: Option<String>,
+        source_path: String,
+        set_primary: bool,
+        set_context_override: bool,
+        context_hint: Option<String>,
+        update_entity_file: bool,
+        update_entity_embed: bool,
+    ) -> Result<Value, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+        let obsidian_root = entry.settings.obsidian_root.as_deref();
+        let life_stream = self.life_stream_service.lock().await;
+        let result = life_stream
+            .attach_image(
+                &entry.path,
+                obsidian_root,
+                &card_id,
+                node_id.as_deref(),
+                &source_path,
+                set_primary,
+                set_context_override,
+                context_hint.as_deref(),
+                update_entity_file,
+                update_entity_embed,
+            )
+            .await?;
+        serde_json::to_value(result).map_err(|error| error.to_string())
+    }
+
+    async fn life_stream_image_backfill(
+        &self,
+        workspace_id: String,
+        update_embed_block: bool,
+    ) -> Result<Value, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+        let obsidian_root = entry.settings.obsidian_root.as_deref();
+        let life_stream = self.life_stream_service.lock().await;
+        let summary = life_stream
+            .backfill_entity_images(&entry.path, obsidian_root, update_embed_block)
+            .await?;
+        serde_json::to_value(summary).map_err(|error| error.to_string())
     }
 
     async fn life_stream_read_log(
@@ -4890,6 +5039,13 @@ fn parse_optional_usize(value: &Value, key: &str) -> Option<usize> {
     }
 }
 
+fn parse_optional_bool(value: &Value, key: &str) -> Option<bool> {
+    match value {
+        Value::Object(map) => map.get(key).and_then(|value| value.as_bool()),
+        _ => None,
+    }
+}
+
 fn read_json_file(path: &Path) -> Result<Value, String> {
     let mut file = File::open(path).map_err(|err| err.to_string())?;
     let mut contents = String::new();
@@ -5336,6 +5492,83 @@ async fn handle_rpc_request(
             let option_id = parse_string(&params, "optionId")?;
             state
                 .life_stream_clarify(workspace_id, card_id, option_id)
+                .await
+        }
+        "life_stream_task_dock_load" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            state.life_stream_task_dock_load(workspace_id).await
+        }
+        "life_stream_task_dock_save" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let payload = parse_optional_value(&params, "payload")
+                .ok_or("missing `payload`")?;
+            let payload = serde_json::from_value::<life_stream::TaskDockPayload>(payload)
+                .map_err(|error| format!("invalid `payload`: {error}"))?;
+            state.life_stream_task_dock_save(workspace_id, payload).await
+        }
+        "life_stream_restructure" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let card_id = parse_string(&params, "cardId")?;
+            let action_value = parse_optional_value(&params, "action")
+                .ok_or("missing `action`")?;
+            let action = serde_json::from_value::<life_stream::CausalRestructureAction>(
+                action_value,
+            )
+            .map_err(|error| format!("invalid `action`: {error}"))?;
+            let source_node_ids =
+                parse_optional_string_array(&params, "sourceNodeIds").unwrap_or_default();
+            let target_mode = parse_optional_string(&params, "targetMode");
+            state
+                .life_stream_restructure(
+                    workspace_id,
+                    card_id,
+                    action,
+                    source_node_ids,
+                    target_mode,
+                )
+                .await
+        }
+        "life_stream_image_candidates" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let card_id = parse_string(&params, "cardId")?;
+            let node_id = parse_optional_string(&params, "nodeId");
+            state
+                .life_stream_image_candidates(workspace_id, card_id, node_id)
+                .await
+        }
+        "life_stream_image_attach" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let card_id = parse_string(&params, "cardId")?;
+            let node_id = parse_optional_string(&params, "nodeId");
+            let source_path = parse_string(&params, "sourcePath")?;
+            let set_primary = parse_optional_bool(&params, "setPrimary").unwrap_or(true);
+            let set_context_override =
+                parse_optional_bool(&params, "setContextOverride").unwrap_or(false);
+            let context_hint = parse_optional_string(&params, "contextHint");
+            let update_entity_file =
+                parse_optional_bool(&params, "updateEntityFile").unwrap_or(true);
+            let update_entity_embed =
+                parse_optional_bool(&params, "updateEntityEmbed").unwrap_or(false);
+            state
+                .life_stream_image_attach(
+                    workspace_id,
+                    card_id,
+                    node_id,
+                    source_path,
+                    set_primary,
+                    set_context_override,
+                    context_hint,
+                    update_entity_file,
+                    update_entity_embed,
+                )
+                .await
+        }
+        "life_stream_image_backfill" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let update_embed_block =
+                parse_optional_bool(&params, "updateEmbedBlock").unwrap_or(false);
+            state
+                .life_stream_image_backfill(workspace_id, update_embed_block)
                 .await
         }
         "life_stream_read_log" => {
