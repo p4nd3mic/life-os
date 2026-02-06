@@ -10,7 +10,10 @@ use uuid::Uuid;
 use super::images::{CandidateProviderConfig, CandidateProviderRegistry};
 use super::types::{CardType, CausalNode, DomainId, ImageAssetRecord, ImageCandidate, StreamCard};
 
-const DEFAULT_EXTERNAL_PHOTO_ROOT: &str = "/Volumes/YouTube 4TB/photos";
+const DEFAULT_EXTERNAL_PHOTO_ROOTS: &[&str] = &[
+    "/Volumes/YouTube 4TB/photos",
+    "/Volumes/YouTube 4TB/Photos",
+];
 const MAX_CANDIDATES: usize = 64;
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif"];
 
@@ -86,6 +89,63 @@ pub(crate) fn resolve_entity_for_card(card: &StreamCard, node_id: Option<&str>) 
     }
 }
 
+pub(crate) fn promote_entity_from_source_path(
+    entity: &ResolvedEntity,
+    source_path: &Path,
+) -> ResolvedEntity {
+    if entity.entity_type != "general" {
+        return entity.clone();
+    }
+
+    let components: Vec<String> = source_path
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().to_string())
+        .collect();
+    if components.len() < 2 {
+        return entity.clone();
+    }
+
+    let mut promoted: Option<(String, String)> = None;
+    for index in 0..components.len().saturating_sub(1) {
+        let current = components[index].to_ascii_lowercase();
+        let mapped_type = match current.as_str() {
+            "media" => Some("media"),
+            "games" | "game" => Some("game"),
+            "books" | "book" => Some("book"),
+            "people" => Some("people"),
+            "geography" | "places" | "place" => Some("geography"),
+            _ => None,
+        };
+        let Some(mapped_type) = mapped_type else {
+            continue;
+        };
+
+        let next = components[index + 1].trim().to_string();
+        if next.is_empty() || next.contains('.') {
+            continue;
+        }
+        promoted = Some((mapped_type.to_string(), next));
+        break;
+    }
+
+    let Some((entity_type, entity_name)) = promoted else {
+        return entity.clone();
+    };
+    let entity_slug = slugify(entity_name.as_str());
+    if entity_slug.is_empty() {
+        return entity.clone();
+    }
+
+    ResolvedEntity {
+        entity_key: format!("{entity_type}:{entity_slug}"),
+        entity_type,
+        entity_name,
+        entity_slug,
+        entity_link: entity.entity_link.clone(),
+        context_text: entity.context_text.clone(),
+    }
+}
+
 pub(crate) async fn find_image_candidates(
     obsidian_root: &Path,
     entity: &ResolvedEntity,
@@ -93,7 +153,8 @@ pub(crate) async fn find_image_candidates(
     tmdb_api_key: Option<&str>,
 ) -> Result<Vec<ImageCandidate>, String> {
     let managed_dir = managed_entity_dir(obsidian_root, entity);
-    let mut directories = vec![managed_dir.clone()];
+    let inbox_dir = runtime_inbox_entity_dir(obsidian_root, entity);
+    let mut directories = vec![managed_dir.clone(), inbox_dir.clone()];
     directories.extend(source_directories(entity).await?);
 
     let mut seen = HashSet::new();
@@ -103,6 +164,7 @@ pub(crate) async fn find_image_candidates(
             continue;
         }
         let is_managed = directory.starts_with(obsidian_root);
+        let is_runtime_inbox = directory.starts_with(obsidian_root.join("Runtime").join("ImageInbox"));
         let mut files = collect_image_files(&directory)?;
         for file in files.drain(..) {
             let canonical = file.canonicalize().unwrap_or_else(|_| file.clone());
@@ -115,7 +177,9 @@ pub(crate) async fn find_image_candidates(
             };
             let metadata = std::fs::metadata(&file).ok();
             let modified = metadata.and_then(|meta| meta.modified().ok());
-            let source_kind = if is_managed {
+            let source_kind = if is_runtime_inbox {
+                "provider_cached".to_string()
+            } else if is_managed {
                 "managed_local".to_string()
             } else {
                 "external_local".to_string()
@@ -133,8 +197,16 @@ pub(crate) async fn find_image_candidates(
         }
     }
 
-    let remote_candidates =
-        fetch_remote_candidates(obsidian_root, entity, tmdb_api_key, take_limit(limit)).await?;
+    let remote_candidates = fetch_remote_candidates(
+        obsidian_root,
+        entity,
+        tmdb_api_key,
+        take_limit(limit),
+        ranked
+            .iter()
+            .any(|item| item.source_kind.starts_with("provider_")),
+    )
+    .await?;
     for candidate in remote_candidates {
         let canonical = candidate
             .path
@@ -427,6 +499,8 @@ fn entity_path_from_link(obsidian_root: &Path, link: &str) -> Option<PathBuf> {
 fn entity_folder_for_type(entity_type: &str) -> &'static str {
     match entity_type {
         "media" => "Media",
+        "game" | "games" => "Media",
+        "book" | "books" => "Media",
         "food" => "Food",
         "delivery" => "Delivery",
         "fitness" => "Fitness",
@@ -513,7 +587,9 @@ fn normalize_entity_type(
             .replace("entity/", "")
             .replace(' ', "");
         return match normalized.as_str() {
-            "anime" | "movie" | "show" | "tv" | "game" | "mediaadd" => "media".to_string(),
+            "anime" | "movie" | "show" | "tv" | "mediaadd" => "media".to_string(),
+            "game" | "games" => "game".to_string(),
+            "book" | "books" | "novel" | "manga" | "comic" => "book".to_string(),
             "person" | "people" => "people".to_string(),
             "location" | "place" | "geography" => "geography".to_string(),
             "food" | "meal" => "food".to_string(),
@@ -563,42 +639,39 @@ fn summarize_entity_name(text: &str) -> String {
 async fn source_directories(entity: &ResolvedEntity) -> Result<Vec<PathBuf>, String> {
     let mut directories = Vec::new();
 
-    let root = PathBuf::from(DEFAULT_EXTERNAL_PHOTO_ROOT);
-    if !root.exists() {
-        return Ok(directories);
-    }
-
     let mapped_folder = source_folder_for_entity_type(&entity.entity_type);
-    let mut parents = vec![root.join(mapped_folder)];
-    let lower_folder = mapped_folder.to_ascii_lowercase();
-    if lower_folder != mapped_folder {
-        parents.push(root.join(lower_folder));
-    }
+    for root in external_photo_roots() {
+        let mut parents = vec![root.join(mapped_folder)];
+        let lower_folder = mapped_folder.to_ascii_lowercase();
+        if lower_folder != mapped_folder {
+            parents.push(root.join(lower_folder));
+        }
 
-    for parent in parents {
-        directories.push(parent.join(&entity.entity_name));
-        directories.push(parent.join(&entity.entity_slug));
+        for parent in parents {
+            directories.push(parent.join(&entity.entity_name));
+            directories.push(parent.join(&entity.entity_slug));
 
-        if parent.exists() {
-            let entries = std::fs::read_dir(&parent).map_err(|error| {
-                format!(
-                    "Failed reading image source directory {}: {}",
-                    parent.display(),
-                    error
-                )
-            })?;
-            for entry in entries {
-                let Ok(entry) = entry else {
-                    continue;
-                };
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                let name = entry.file_name().to_string_lossy().to_string();
-                let slug = slugify(&name);
-                if slug == entity.entity_slug {
-                    directories.push(path);
+            if parent.exists() {
+                let entries = std::fs::read_dir(&parent).map_err(|error| {
+                    format!(
+                        "Failed reading image source directory {}: {}",
+                        parent.display(),
+                        error
+                    )
+                })?;
+                for entry in entries {
+                    let Ok(entry) = entry else {
+                        continue;
+                    };
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let slug = slugify(&name);
+                    if slug == entity.entity_slug {
+                        directories.push(path);
+                    }
                 }
             }
         }
@@ -619,6 +692,9 @@ async fn source_directories(entity: &ResolvedEntity) -> Result<Vec<PathBuf>, Str
 fn source_folder_for_entity_type(entity_type: &str) -> &'static str {
     match entity_type {
         "media" => "Media",
+        "game" | "games" => "Games",
+        "book" | "books" => "Books",
+        "anime" | "movie" | "show" | "tv" => "Media",
         "people" => "People",
         "geography" => "Geography",
         "delivery" => "Delivery",
@@ -632,6 +708,14 @@ fn managed_entity_dir(obsidian_root: &Path, entity: &ResolvedEntity) -> PathBuf 
     obsidian_root
         .join("Assets")
         .join("Entities")
+        .join(&entity.entity_type)
+        .join(&entity.entity_slug)
+}
+
+fn runtime_inbox_entity_dir(obsidian_root: &Path, entity: &ResolvedEntity) -> PathBuf {
+    obsidian_root
+        .join("Runtime")
+        .join("ImageInbox")
         .join(&entity.entity_type)
         .join(&entity.entity_slug)
 }
@@ -747,6 +831,23 @@ fn take_limit(limit: usize) -> usize {
     limit.min(MAX_CANDIDATES).max(1)
 }
 
+fn external_photo_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for raw in DEFAULT_EXTERNAL_PHOTO_ROOTS {
+        let path = PathBuf::from(raw);
+        if !path.exists() {
+            continue;
+        }
+        let canonical = path.canonicalize().unwrap_or(path);
+        let key = canonical.to_string_lossy().to_string();
+        if seen.insert(key) {
+            roots.push(canonical);
+        }
+    }
+    roots
+}
+
 fn extract_search_tokens(value: &str, max: usize) -> Vec<String> {
     let mut tokens = Vec::new();
     for token in value
@@ -772,8 +873,9 @@ async fn fetch_remote_candidates(
     entity: &ResolvedEntity,
     tmdb_api_key: Option<&str>,
     limit: usize,
+    has_existing_provider_candidates: bool,
 ) -> Result<Vec<RankedFile>, String> {
-    if limit == 0 {
+    if limit == 0 || has_existing_provider_candidates {
         return Ok(Vec::new());
     }
     let registry = CandidateProviderRegistry::new(CandidateProviderConfig {
@@ -792,11 +894,7 @@ async fn fetch_remote_candidates(
         return Ok(Vec::new());
     }
 
-    let inbox_root = obsidian_root
-        .join("Runtime")
-        .join("ImageInbox")
-        .join(&entity.entity_type)
-        .join(&entity.entity_slug);
+    let inbox_root = runtime_inbox_entity_dir(obsidian_root, entity);
     fs::create_dir_all(&inbox_root).await.map_err(|error| {
         format!(
             "Failed creating image inbox {}: {}",
@@ -867,11 +965,8 @@ fn validate_source_path(obsidian_root: &Path, source_path: &Path) -> Result<(), 
     })?;
     let mut allowed_roots = vec![obsidian_root];
 
-    let photos_root = PathBuf::from(DEFAULT_EXTERNAL_PHOTO_ROOT);
-    if photos_root.exists() {
-        if let Ok(canonical) = photos_root.canonicalize() {
-            allowed_roots.push(canonical);
-        }
+    for root in external_photo_roots() {
+        allowed_roots.push(root);
     }
 
     if allowed_roots
@@ -951,8 +1046,8 @@ fn slugify(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_entity_type, parse_entity_from_link, slugify, update_entity_markdown_content,
-        EntityFileSyncOptions,
+        normalize_entity_type, parse_entity_from_link, promote_entity_from_source_path, slugify,
+        update_entity_markdown_content, EntityFileSyncOptions,
     };
     use crate::life_stream::types::{CardType, DomainId};
 
@@ -1002,5 +1097,24 @@ mod tests {
         );
         assert!(updated.contains("![[Assets/Entities/media/cowboy/new.jpg]]"));
         assert!(!updated.contains("old/path.jpg"));
+    }
+
+    #[test]
+    fn promote_general_entity_from_media_path() {
+        let entity = super::ResolvedEntity {
+            entity_key: "general:episode-5".to_string(),
+            entity_type: "general".to_string(),
+            entity_name: "Episode 5 thoughts".to_string(),
+            entity_slug: "episode-5-thoughts".to_string(),
+            entity_link: None,
+            context_text: None,
+        };
+        let promoted = promote_entity_from_source_path(
+            &entity,
+            std::path::Path::new("/Volumes/YouTube 4TB/Photos/Media/Cowboy Bebop/cover.jpg"),
+        );
+        assert_eq!(promoted.entity_type, "media");
+        assert_eq!(promoted.entity_name, "Cowboy Bebop");
+        assert_eq!(promoted.entity_key, "media:cowboy-bebop");
     }
 }

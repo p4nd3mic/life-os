@@ -95,10 +95,13 @@ All files in the Rust Life Stream subsystem:
 - `src-tauri/src/life_stream/handlers/nutrition.rs`
 - `src-tauri/src/life_stream/handlers/query.rs`
 - `src-tauri/src/life_stream/handlers/thought.rs`
+- `src-tauri/src/life_stream/image_catalog.rs`
+- `src-tauri/src/life_stream/image_manual.rs`
 - `src-tauri/src/life_stream/images/cache.rs`
 - `src-tauri/src/life_stream/images/fetchers/food.rs`
 - `src-tauri/src/life_stream/images/fetchers/mod.rs`
 - `src-tauri/src/life_stream/images/fetchers/tmdb.rs`
+- `src-tauri/src/life_stream/images/providers.rs`
 - `src-tauri/src/life_stream/images/mod.rs`
 - `src-tauri/src/life_stream/logging.rs`
 - `src-tauri/src/life_stream/mcp_bridge.rs`
@@ -107,15 +110,19 @@ All files in the Rust Life Stream subsystem:
 - `src-tauri/src/life_stream/obsidian.rs`
 - `src-tauri/src/life_stream/service.rs`
 - `src-tauri/src/life_stream/service_test.rs`
+- `src-tauri/src/life_stream/task_dock.rs`
 - `src-tauri/src/life_stream/tests.rs`
 - `src-tauri/src/life_stream/types.rs`
 
 **Most important backend files**
 - `service.rs` — decision engine + orchestration + enrichment
+- `image_manual.rs` — candidate ranking, import, entity file sync
+- `images/providers.rs` — provider adapters (TMDB now, extensible)
+- `task_dock.rs` — runtime task/reminder persistence
 - `mcp_registry.rs` — tool whitelist + tool prompt list + keyword mapping
 - `mcp_bridge.rs` — JSON-RPC MCP stdio bridge to Node `life-mcp`
 - `obsidian.rs` — persistence (append stream entries, write entity files)
-- `images/service.rs` — TMDB fetch + local cache writing
+- `images/mod.rs` — legacy fetch + cache service
 - `logging.rs` — runtime logs (`Runtime/life-stream.log`)
 
 ### Other important UI subsystems

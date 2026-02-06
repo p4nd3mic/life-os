@@ -45,6 +45,7 @@ export function CardBubble({
 }: CardBubbleProps) {
   const context = useLifeStreamContextOptional();
   const [isExpanded, setIsExpanded] = useState(false);
+  const [showGraphTranscript, setShowGraphTranscript] = useState(false);
   const [isImageAttachOpen, setIsImageAttachOpen] = useState(false);
   const [imageAttachTargetNodeId, setImageAttachTargetNodeId] = useState<string | null>(null);
   const [imageAttachContextHint, setImageAttachContextHint] = useState<string | null>(null);
@@ -65,6 +66,7 @@ export function CardBubble({
     setImageAttachError(null);
     setImageAttachLoading(false);
     setIsImageAttachOpen(false);
+    setShowGraphTranscript(false);
   }, [card.id]);
 
   const displayTitle = useMemo(() => resolveCardTitleWithIcon(card), [card]);
@@ -82,6 +84,7 @@ export function CardBubble({
   );
   const showCauseEffectLayout =
     renderLayoutMode === "cause_effect" && Boolean(card.causal);
+  const isNativeGraphMode = showCauseEffectLayout;
   const causalCard = showCauseEffectLayout ? card.causal : undefined;
   const isDeliverySession = card.cardType === "delivery_session";
   const clarificationOptions = card.clarificationOptions ?? [];
@@ -97,6 +100,72 @@ export function CardBubble({
       (section) => section.title.toLowerCase() === "codex response",
     );
   }, [card.expanded]);
+  const transcriptSections = useMemo(() => {
+    return card.expanded?.sections ?? [];
+  }, [card.expanded]);
+  const causalTranscriptFallback = useMemo(() => {
+    const rightNodes = card.causal?.rightNodes ?? [];
+    if (rightNodes.length === 0) {
+      return "";
+    }
+    const lines = rightNodes
+      .map((node) => {
+        const headline = node.headline?.trim() || node.title?.trim() || node.text?.trim();
+        if (!headline) {
+          return "";
+        }
+        const bullets = (node.bullets ?? [])
+          .map((bullet) => bullet.trim())
+          .filter((bullet) => bullet.length > 0);
+        if (bullets.length === 0) {
+          return `- ${headline}`;
+        }
+        return [`- ${headline}`, ...bullets.map((bullet) => `  - ${bullet}`)].join("\n");
+      })
+      .filter((line) => line.length > 0);
+    return lines.join("\n");
+  }, [card.causal?.rightNodes]);
+  const transcriptOutput = useMemo(() => {
+    const responseBody = responseSection?.body?.trim();
+    if (responseBody) {
+      return responseBody;
+    }
+    if (transcriptSections.length > 0) {
+      return transcriptSections
+        .map((section) => {
+          const title = section.title?.trim();
+          const body = section.body?.trim();
+          if (!body) {
+            return "";
+          }
+          if (!title) {
+            return body;
+          }
+          return `## ${title}\n${body}`;
+        })
+        .filter((block) => block.length > 0)
+        .join("\n\n")
+        .trim();
+    }
+    return (
+      card.assistantPreview?.trim() ||
+      card.summary?.trim() ||
+      causalTranscriptFallback ||
+      ""
+    );
+  }, [
+    card.assistantPreview,
+    card.summary,
+    causalTranscriptFallback,
+    responseSection,
+    transcriptSections,
+  ]);
+  const transcriptAdditionalSections = useMemo(() => {
+    if (!responseSection) {
+      return [];
+    }
+    return transcriptSections.filter((section) => section !== responseSection);
+  }, [responseSection, transcriptSections]);
   const completedOrdersSection = useMemo(() => {
     const sections = card.expanded?.sections ?? [];
     return sections.find(
@@ -129,7 +198,21 @@ export function CardBubble({
     const summary = card.summary?.trim();
     return summary ? buildCollapsedSummary(summary) : "";
   }, [card.summary, responseSection]);
-  const inputText = card.originalInput?.trim();
+  const inputText = useMemo(() => {
+    const directInput = card.originalInput?.trim();
+    if (directInput) {
+      return directInput;
+    }
+
+    const expandedInput = card.expanded?.originalInput?.trim();
+    if (expandedInput) {
+      return expandedInput;
+    }
+
+    const leftNode = causalCard?.leftNodes?.[0];
+    const causalInput = leftNode?.details?.trim() || leftNode?.text?.trim();
+    return causalInput ?? "";
+  }, [card.expanded?.originalInput, card.originalInput, causalCard]);
   const requestBadges = useMemo(() => {
     const badges: Array<{ key: string; label: string; type: "model" | "effort" }> = [];
     if (card.request?.model) {
@@ -157,6 +240,7 @@ export function CardBubble({
   const handleCardClick = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
       if (!canExpand) return;
+      if (isNativeGraphMode) return;
       if (event.defaultPrevented) return;
       const selection = window.getSelection?.() ?? document.getSelection?.();
       if (selection && selection.toString().trim().length > 0) {
@@ -168,7 +252,7 @@ export function CardBubble({
       }
       toggleExpanded();
     },
-    [canExpand, toggleExpanded],
+    [canExpand, isNativeGraphMode, toggleExpanded],
   );
 
   const handleClarify = useCallback(
@@ -304,6 +388,122 @@ export function CardBubble({
     });
   }, [applyCandidateImage]);
 
+  if (isNativeGraphMode && causalCard) {
+    return (
+      <section className={`life-graph-card state-${card.state} domain-${card.domain}`}>
+        <CauseEffectCard
+          cardId={card.id}
+          cardType={card.cardType}
+          cardTitle={card.title}
+          causal={causalCard}
+          onOpenTranscript={() => {
+            setShowGraphTranscript((prev) => !prev);
+          }}
+          onRestructure={(action, options) => onRestructure(card.id, action, options)}
+          onRequestNodeImage={(nodeId) => {
+            const node = [...causalCard.leftNodes, ...causalCard.rightNodes].find(
+              (item) => item.id === nodeId,
+            );
+            void openImageAttachSheet(nodeId, node?.text ?? card.originalInput ?? null);
+          }}
+        />
+
+        {showGraphTranscript && (
+          <div className="life-graph-card__transcript" data-no-toggle>
+            {inputText && (
+              <div className="life-graph-card__transcript-section">
+                <div className="life-graph-card__transcript-label">Original Input</div>
+                <div className="life-graph-card__transcript-text">{inputText}</div>
+              </div>
+            )}
+
+            {transcriptOutput && (
+              <div className="life-graph-card__transcript-section">
+                <div className="life-graph-card__transcript-label">Codex Response</div>
+                <Markdown
+                  value={transcriptOutput}
+                  className="markdown life-graph-card__transcript-markdown"
+                />
+              </div>
+            )}
+
+            {transcriptAdditionalSections.length > 0 && (
+              <div className="life-graph-card__transcript-section">
+                <div className="life-graph-card__transcript-label">Additional sections</div>
+                <div className="life-graph-card__transcript-stack">
+                  {transcriptAdditionalSections.map((section, sectionIndex) => (
+                    <div key={`${section.title}-${sectionIndex}`} className="life-graph-card__transcript-item">
+                      <div className="life-graph-card__transcript-item-title">{section.title}</div>
+                      <Markdown
+                        value={section.body}
+                        className="markdown life-graph-card__transcript-markdown"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {(canCancel || canRetry || canRetryMcp) && (
+          <div className="life-card-bubble__actions">
+            {canCancel && (
+              <button
+                type="button"
+                className="life-card-bubble__action"
+                onClick={() => onCancel(card.id)}
+              >
+                Cancel
+              </button>
+            )}
+            {canRetry && (
+              <button
+                type="button"
+                className="life-card-bubble__action is-primary"
+                onClick={() => onRetry(card.id)}
+              >
+                Retry
+              </button>
+            )}
+            {canRetryMcp && !canRetry && (
+              <button
+                type="button"
+                className="life-card-bubble__action is-primary"
+                onClick={() => onRetry(card.id)}
+              >
+                Retry tool
+              </button>
+            )}
+          </div>
+        )}
+
+        {card.errorMessage && (
+          <div role="alert" className="life-card-bubble__error">
+            {card.errorMessage}
+          </div>
+        )}
+
+        <ProcessingIndicator card={card} />
+
+        <ImageAttachSheet
+          open={isImageAttachOpen}
+          loading={imageAttachLoading}
+          error={imageAttachError}
+          response={imageAttachResponse}
+          contextHint={imageAttachContextHint}
+          onClose={closeImageAttachSheet}
+          onBrowse={() => {
+            void browseForImage();
+          }}
+          onSelectCandidate={(candidate, options) => {
+            void applyCandidateImage(candidate, options);
+          }}
+        />
+      </section>
+    );
+  }
+
   return (
     <article
       className={`bubble life-card-bubble state-${card.state}${
@@ -367,23 +567,6 @@ export function CardBubble({
         </div>
       )}
 
-      {causalCard && (
-        <CauseEffectCard
-          cardId={card.id}
-          cardType={card.cardType}
-          causal={causalCard}
-          onRestructure={(action, options) => onRestructure(card.id, action, options)}
-          onRequestNodeImage={(nodeId) => {
-            const node = causalCard
-              ? [...causalCard.leftNodes, ...causalCard.rightNodes].find(
-                  (item) => item.id === nodeId,
-                )
-              : undefined;
-            void openImageAttachSheet(nodeId, node?.text ?? card.originalInput ?? null);
-          }}
-        />
-      )}
-
       {showImage && card.image && (
         <div className="life-card-bubble__image">
           <CardImage
@@ -431,7 +614,7 @@ export function CardBubble({
         </div>
       )}
 
-      {!showCauseEffectLayout && isDeliverySession && completedOrdersSection && (
+      {isDeliverySession && completedOrdersSection && (
         <div className="life-card-bubble__section" data-no-toggle>
           <div className="life-card-bubble__label">Completed Orders</div>
           <Markdown
@@ -441,7 +624,7 @@ export function CardBubble({
         </div>
       )}
 
-      {!showCauseEffectLayout && isDeliverySession && totalsSection && (
+      {isDeliverySession && totalsSection && (
         <div className="life-card-bubble__section" data-no-toggle>
           <div className="life-card-bubble__label">Totals</div>
           <Markdown
@@ -451,7 +634,7 @@ export function CardBubble({
         </div>
       )}
 
-      {summaryText && !isExpanded && !isDeliverySession && !showCauseEffectLayout && (
+      {summaryText && !isExpanded && !isDeliverySession && (
         <div className="life-card-bubble__section">
           <Markdown
             value={summaryText}
@@ -545,7 +728,9 @@ export function CardBubble({
       <ProcessingIndicator card={card} />
 
       {isExpanded && canExpand && (
-        <ExpandedCard card={card} onCollapse={() => setIsExpanded(false)} />
+        <div className="life-card-bubble__expanded-wrap" data-no-toggle>
+          <ExpandedCard card={card} onCollapse={() => setIsExpanded(false)} />
+        </div>
       )}
     </article>
   );

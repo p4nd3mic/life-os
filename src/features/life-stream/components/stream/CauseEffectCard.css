@@ -1,5 +1,5 @@
 .life-causal-card {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .life-causal-card__labels {
@@ -11,9 +11,9 @@
 
 .life-causal-card__lane-label {
   font-size: 11px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-weight: 700;
+  font-weight: 760;
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -21,40 +21,27 @@
 }
 
 .life-causal-card__lane-label--left {
-  color: rgba(251, 191, 36, 0.96);
+  color: rgba(251, 191, 36, 0.98);
 }
 
 .life-causal-card__lane-label--right {
-  justify-content: flex-start;
-  color: rgba(74, 222, 128, 0.95);
+  color: rgba(110, 231, 183, 0.98);
 }
 
 .life-causal-card__lanes {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: clamp(24px, 4vw, 56px);
+  gap: clamp(20px, 3.6vw, 52px);
 }
 
 .life-causal-card__lane {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   z-index: 2;
   contain: layout paint;
-}
-
-.life-causal-card__lane--right {
-  align-items: stretch;
-}
-
-.life-causal-card__lane--right .life-causal-card__node:nth-child(3n + 2) {
-  margin-left: 6px;
-}
-
-.life-causal-card__lane--right .life-causal-card__node:nth-child(3n) {
-  margin-left: 12px;
 }
 
 .life-causal-card__links {
@@ -73,7 +60,7 @@
   stroke-width: 2.3;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
-  filter: drop-shadow(0 0 4px rgba(245, 208, 90, 0.28));
+  filter: drop-shadow(0 0 4px rgba(245, 208, 90, 0.3));
 }
 
 .life-causal-card__path.is-dimmed {
@@ -81,7 +68,7 @@
 }
 
 .life-causal-card__head {
-  fill: rgba(248, 213, 102, 0.96);
+  fill: rgba(248, 213, 102, 0.97);
   stroke: rgba(255, 236, 170, 0.86);
   stroke-width: 0.9;
   filter: drop-shadow(0 0 3px rgba(245, 208, 90, 0.45));
@@ -98,16 +85,18 @@
   border: 1px solid var(--border-subtle);
   background: linear-gradient(
     180deg,
-    rgba(8, 12, 20, 0.92) 0%,
-    rgba(8, 12, 20, 0.78) 100%
+    rgba(8, 12, 20, 0.93) 0%,
+    rgba(8, 12, 20, 0.8) 100%
   );
-  padding: 12px;
+  padding: 12px 13px 12px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   transition:
     transform 150ms ease,
     box-shadow 160ms ease,
-    border-color 160ms ease;
+    border-color 160ms ease,
+    background 160ms ease;
   will-change: transform;
+  cursor: pointer;
 }
 
 .life-causal-card__node--left {
@@ -118,21 +107,28 @@
   border-left: 3px solid rgba(74, 222, 128, 0.88);
 }
 
-.life-causal-card__node.is-top-right {
+.life-causal-card__node.is-selected {
+  border-color: rgba(96, 165, 250, 0.66);
   box-shadow:
-    0 0 0 1px rgba(110, 231, 183, 0.2),
-    0 8px 20px rgba(0, 0, 0, 0.32);
+    0 0 0 1px rgba(56, 189, 248, 0.42),
+    0 0 0 3px rgba(56, 189, 248, 0.15),
+    0 8px 24px rgba(0, 0, 0, 0.34);
+  background: linear-gradient(
+    180deg,
+    rgba(9, 15, 24, 0.96) 0%,
+    rgba(9, 15, 24, 0.84) 100%
+  );
 }
 
 .life-causal-card__node-rank {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 9px;
+  right: 9px;
   width: 18px;
   height: 18px;
   border-radius: 999px;
   border: 1px solid rgba(148, 163, 184, 0.45);
-  background: rgba(15, 23, 42, 0.8);
+  background: rgba(15, 23, 42, 0.82);
   color: rgba(226, 232, 240, 0.9);
   font-size: 10px;
   font-weight: 700;
@@ -141,43 +137,26 @@
   justify-content: center;
 }
 
-.life-causal-card__node-meta {
-  display: flex;
-  justify-content: flex-start;
-  margin-bottom: 6px;
+.life-causal-card__node-title {
+  font-size: clamp(15px, 1.28vw, 20px);
+  font-weight: 760;
+  line-height: 1.16;
+  color: rgba(246, 250, 255, 0.99);
+  margin-bottom: 9px;
+  letter-spacing: 0.001em;
+  text-wrap: wrap;
+  word-break: normal;
 }
 
-.life-causal-card__role {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: rgba(237, 242, 247, 0.9);
-  background: rgba(148, 163, 184, 0.18);
-  border: 1px solid rgba(148, 163, 184, 0.34);
-  padding: 2px 7px;
-  border-radius: 999px;
-}
-
-.life-causal-card__node.is-role-cause .life-causal-card__role,
-.life-causal-card__node.is-role-action .life-causal-card__role,
-.life-causal-card__node.is-role-question .life-causal-card__role {
-  background: rgba(251, 191, 36, 0.17);
-  border-color: rgba(251, 191, 36, 0.45);
-  color: rgba(253, 230, 138, 0.96);
-}
-
-.life-causal-card__node.is-role-effect .life-causal-card__role,
-.life-causal-card__node.is-role-reward .life-causal-card__role,
-.life-causal-card__node.is-role-response .life-causal-card__role {
-  background: rgba(74, 222, 128, 0.17);
-  border-color: rgba(74, 222, 128, 0.42);
-  color: rgba(187, 247, 208, 0.95);
+.life-causal-card__node--left .life-causal-card__node-title {
+  font-size: clamp(18px, 1.62vw, 24px);
+  color: rgba(255, 250, 232, 0.99);
 }
 
 .life-causal-card__node-image {
   display: block;
   width: 100%;
-  max-height: min(220px, 28vh);
+  max-height: min(252px, 32vh);
   object-fit: contain;
   object-position: center top;
   border-radius: 10px;
@@ -189,7 +168,7 @@
   width: 100%;
   border: none;
   padding: 0;
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   border-radius: 10px;
   overflow: hidden;
   background: rgba(2, 6, 16, 0.65);
@@ -210,19 +189,91 @@
   padding: 3px 7px;
 }
 
-.life-causal-card__node-text {
-  font-size: 13.5px;
-  line-height: 1.45;
-  color: var(--text-primary);
+.life-causal-card__node-summary-line {
+  font-size: clamp(14px, 1.02vw, 17px);
+  font-weight: 640;
+  line-height: 1.34;
+  color: rgba(236, 245, 255, 0.99);
+  letter-spacing: 0.006em;
+}
+
+.life-causal-card__overflow-list {
+  margin: 4px 0 0;
+  padding-left: 0;
+  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: min(280px, 34vh);
+  overflow-y: auto;
+  list-style: none;
+}
+
+.life-causal-card__overflow-list li {
+  color: rgba(210, 226, 245, 0.97);
+  font-size: 14px;
+  line-height: 1.34;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 8px;
+}
+
+.life-causal-card__overflow-number {
+  color: rgba(165, 201, 238, 0.88);
+  min-width: 1.45rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.life-causal-card__overflow-text {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.life-causal-card__node-bullets {
+  margin: 7px 0 0;
+  padding-left: 1.05rem;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.life-causal-card__node-bullets li {
+  color: rgba(213, 230, 247, 0.98);
+  font-size: 13px;
+  line-height: 1.34;
+}
+
+.life-causal-card__node-details-toggle {
+  margin-top: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  background: rgba(15, 23, 42, 0.54);
+  color: rgba(196, 211, 227, 0.95);
+  border-radius: 999px;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.life-causal-card__node-details-toggle:hover {
+  border-color: rgba(125, 211, 252, 0.52);
+  color: rgba(224, 242, 254, 0.98);
+}
+
+.life-causal-card__node-details {
+  margin-top: 9px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.34);
+  padding-top: 9px;
+  color: rgba(194, 209, 226, 0.95);
+  font-size: 13px;
+  line-height: 1.48;
   white-space: pre-wrap;
 }
 
-.life-causal-card__node--right .life-causal-card__node-text {
-  font-size: 14px;
-}
-
 .life-causal-card__node-status {
-  margin-top: 8px;
+  margin-top: 9px;
   font-size: 11px;
   color: var(--text-muted);
   display: inline-flex;
@@ -247,46 +298,51 @@
   color: #e0f2fe;
 }
 
-.life-causal-card__node.is-jump-highlight {
-  box-shadow:
-    0 0 0 2px rgba(56, 189, 248, 0.65),
-    0 0 24px rgba(56, 189, 248, 0.4);
+.life-causal-card__node.is-overflow-summary {
+  border-style: dashed;
+  border-color: rgba(125, 211, 252, 0.5);
+  background: linear-gradient(
+    180deg,
+    rgba(8, 14, 25, 0.93) 0%,
+    rgba(8, 14, 25, 0.82) 100%
+  );
 }
 
-.life-causal-card__controls {
+.life-causal-card__node.is-overflow-summary .life-causal-card__node-title {
+  color: rgba(220, 239, 255, 0.99);
+}
+
+.life-causal-card__context-toolbar {
+  margin-top: 10px;
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
   align-items: center;
   gap: 8px;
-  margin-top: 10px;
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  background: rgba(8, 15, 27, 0.78);
+  border-radius: 10px;
+  padding: 8px 10px;
+  width: fit-content;
+  max-width: 100%;
 }
 
-.life-causal-card__control {
-  border: 1px solid var(--border-subtle);
-  background: rgba(15, 23, 42, 0.7);
-  color: var(--text-stronger);
+.life-causal-card__context-selected {
+  font-size: 11px;
+  color: rgba(186, 230, 253, 0.96);
+  border: 1px solid rgba(125, 211, 252, 0.32);
+  background: rgba(14, 116, 144, 0.22);
   border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.life-causal-card__control:hover {
-  border-color: var(--border-accent);
-  color: var(--text-primary);
-}
-
-.life-causal-card__control-hint {
-  color: var(--text-muted);
-  font-size: 11px;
+  padding: 4px 8px;
+  max-width: min(620px, 100%);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .life-causal-card__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 10px;
 }
 
 .life-causal-card__action {
@@ -307,6 +363,13 @@
 .life-causal-card__action:disabled {
   opacity: 0.42;
   cursor: not-allowed;
+}
+
+.life-causal-card__node.is-jump-highlight,
+.life-message-row.is-jump-highlight .life-message-row__dot {
+  box-shadow:
+    0 0 0 2px rgba(56, 189, 248, 0.65),
+    0 0 24px rgba(56, 189, 248, 0.4);
 }
 
 .life-causal-card__lightbox {
@@ -367,12 +430,24 @@
     gap: 14px;
   }
 
-  .life-causal-card__lane--right .life-causal-card__node:nth-child(3n + 2),
-  .life-causal-card__lane--right .life-causal-card__node:nth-child(3n) {
-    margin-left: 0;
-  }
-
   .life-causal-card__links {
     display: none;
+  }
+
+  .life-causal-card__node-title {
+    font-size: clamp(14px, 4.8vw, 20px);
+  }
+
+  .life-causal-card__node--left .life-causal-card__node-title {
+    font-size: clamp(17px, 5.8vw, 23px);
+  }
+
+  .life-causal-card__context-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .life-causal-card__context-selected {
+    max-width: 100%;
   }
 }

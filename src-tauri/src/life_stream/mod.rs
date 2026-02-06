@@ -340,6 +340,59 @@ pub async fn life_stream_image_candidates(
 }
 
 #[tauri::command]
+pub async fn life_stream_regenerate_semantics(
+    workspace_id: String,
+    card_ids: Vec<String>,
+    force_llm: Option<bool>,
+    persist: Option<bool>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<SemanticRegenerationResult, String> {
+    let force_llm = force_llm.unwrap_or(true);
+    let persist = persist.unwrap_or(true);
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "life_stream_regenerate_semantics",
+            json!({
+                "workspaceId": workspace_id,
+                "cardIds": card_ids,
+                "forceLlm": force_llm,
+                "persist": persist,
+            }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|error| error.to_string());
+    }
+
+    let (workspace_path, obsidian_root) = {
+        let workspaces = state.workspaces.lock().await;
+        let entry = workspaces.get(&workspace_id).ok_or("workspace not found")?;
+        (entry.path.clone(), entry.settings.obsidian_root.clone())
+    };
+
+    let workspace_session = if force_llm {
+        let sessions = state.sessions.lock().await;
+        sessions.get(&workspace_id).cloned()
+    } else {
+        None
+    };
+
+    let life_stream = state.life_stream_service.lock().await;
+    life_stream
+        .regenerate_semantics_for_cards(
+            &workspace_path,
+            obsidian_root.as_deref(),
+            card_ids,
+            force_llm,
+            persist,
+            workspace_session,
+        )
+        .await
+}
+
+#[tauri::command]
 pub async fn life_stream_image_attach(
     workspace_id: String,
     card_id: String,
@@ -426,6 +479,50 @@ pub async fn life_stream_image_backfill(
             &entry.path,
             obsidian_root,
             update_embed_block.unwrap_or(false),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn life_stream_image_autofetch(
+    workspace_id: String,
+    card_ids: Option<Vec<String>>,
+    mode: Option<ImageAutoFetchMode>,
+    update_entity_file: Option<bool>,
+    update_entity_embed: Option<bool>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<ImageAutoFetchSummary, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "life_stream_image_autofetch",
+            json!({
+                "workspaceId": workspace_id,
+                "cardIds": card_ids,
+                "mode": mode,
+                "updateEntityFile": update_entity_file,
+                "updateEntityEmbed": update_entity_embed,
+            }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|error| error.to_string());
+    }
+
+    let workspaces = state.workspaces.lock().await;
+    let entry = workspaces.get(&workspace_id).ok_or("workspace not found")?;
+    let obsidian_root = entry.settings.obsidian_root.as_deref();
+
+    let life_stream = state.life_stream_service.lock().await;
+    life_stream
+        .auto_fetch_images_for_cards(
+            &entry.path,
+            obsidian_root,
+            card_ids.unwrap_or_default(),
+            mode.unwrap_or_default(),
+            update_entity_file.unwrap_or(true),
+            update_entity_embed.unwrap_or(false),
         )
         .await
 }

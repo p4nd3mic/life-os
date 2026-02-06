@@ -62,7 +62,11 @@ impl CandidateProviderRegistry {
         context_hint: Option<&str>,
         limit: usize,
     ) -> Result<Vec<RemoteImageCandidate>, String> {
-        if entity_type != "media" || limit == 0 {
+        let supports_tmdb = matches!(
+            entity_type,
+            "media" | "anime" | "movie" | "show" | "tv"
+        );
+        if !supports_tmdb || limit == 0 {
             return Ok(Vec::new());
         }
 

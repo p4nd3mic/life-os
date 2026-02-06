@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import type { StreamCard } from "../../types";
 import { CardBubble } from "./CardBubble";
 
@@ -23,6 +23,10 @@ const makeCard = (overrides: Partial<StreamCard> = {}): StreamCard => ({
 });
 
 describe("CardBubble", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   it("does not render placeholder when image is missing", () => {
     const card = makeCard({
       image: { status: "missing" },
@@ -93,7 +97,7 @@ describe("CardBubble", () => {
       },
     });
 
-    render(
+    const { container } = render(
       <CardBubble
         card={card}
         onCancel={() => {}}
@@ -103,12 +107,17 @@ describe("CardBubble", () => {
       />,
     );
 
-    expect(screen.getByText(/Evening walk/i)).toBeTruthy();
-    expect(screen.getByText(/Episode 3/i)).toBeTruthy();
-    expect(screen.queryByText(/Episode 4/i)).toBeNull();
-    expect(screen.getByRole("button", { name: /show all outcomes \(4\)/i })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /show all links/i })).toBeNull();
-    expect(screen.getByText(/top links shown/i)).toBeTruthy();
+    const graph = container.querySelector(".life-graph-card");
+    expect(graph).toBeTruthy();
+    const scoped = within(graph as HTMLElement);
+
+    expect(scoped.getByText(/Evening walk/i)).toBeTruthy();
+    expect(scoped.getByText(/^Episode 1$/i)).toBeTruthy();
+    expect(scoped.getByText(/^Episode 2$/i)).toBeTruthy();
+    expect(scoped.getByText(/^Episode 3$/i)).toBeTruthy();
+    expect(scoped.getByText(/More effects/i)).toBeTruthy();
+    expect(scoped.getByText(/Episode 4/i)).toBeTruthy();
+    expect(scoped.queryByRole("button", { name: /show all outcomes/i })).toBeNull();
   });
 
   it("delivery sessions show latest effects in collapsed mode", () => {
@@ -143,7 +152,7 @@ describe("CardBubble", () => {
       },
     });
 
-    render(
+    const { container } = render(
       <CardBubble
         card={card}
         onCancel={() => {}}
@@ -153,9 +162,14 @@ describe("CardBubble", () => {
       />,
     );
 
-    expect(screen.queryByText(/Order #1/i)).toBeNull();
-    expect(screen.getByText(/Order #2/i)).toBeTruthy();
-    expect(screen.getByText(/Order #3/i)).toBeTruthy();
-    expect(screen.getByText(/Order #4/i)).toBeTruthy();
+    const graph = container.querySelector(".life-graph-card");
+    expect(graph).toBeTruthy();
+    const scoped = within(graph as HTMLElement);
+
+    expect(scoped.getByText(/Order #2/i)).toBeTruthy();
+    expect(scoped.getByText(/Order #3/i)).toBeTruthy();
+    expect(scoped.getByText(/Order #4/i)).toBeTruthy();
+    expect(scoped.getByText(/More outcomes/i)).toBeTruthy();
+    expect(scoped.getByText(/Order #1/i)).toBeTruthy();
   });
 });

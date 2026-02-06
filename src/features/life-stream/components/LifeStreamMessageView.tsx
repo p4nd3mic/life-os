@@ -44,9 +44,12 @@ function LifeStreamNowMarker({
   );
 }
 
-function computeGapPx(gapMinutes: number): number {
-  const gapPx = 12 + Math.log1p(gapMinutes) * 12;
-  return Math.min(96, Math.max(12, Math.round(gapPx)));
+function computeGapPx(gapMinutes: number, compact: boolean): number {
+  const base = compact ? 6 : 12;
+  const slope = compact ? 8 : 12;
+  const upper = compact ? 44 : 96;
+  const gapPx = base + Math.log1p(gapMinutes) * slope;
+  return Math.min(upper, Math.max(base, Math.round(gapPx)));
 }
 
 type TimelineItemBase =
@@ -54,6 +57,7 @@ type TimelineItemBase =
       kind: "card";
       id: string;
       timeMs: number | null;
+      isGraph: boolean;
     }
   | {
       kind: "now";
@@ -66,6 +70,7 @@ type TimelineItem =
       kind: "card";
       id: string;
       timeMs: number | null;
+      isGraph: boolean;
       gapPx: number;
       gapMinutes: number;
     }
@@ -130,6 +135,7 @@ export function LifeStreamMessageView() {
         kind: "card",
         id: card.id,
         timeMs: parseOccurredAt(card.occurredAt),
+        isGraph: card.layoutMode === "cause_effect" && Boolean(card.causal),
       });
     });
 
@@ -151,8 +157,14 @@ export function LifeStreamMessageView() {
           Math.round((prevTime - item.timeMs) / 60000),
         );
       }
-      const gapPx = computeGapPx(gapMinutes);
-      enriched.push({ ...item, gapPx, gapMinutes });
+      if (item.kind === "card") {
+        const compact = item.isGraph;
+        const gapPx = computeGapPx(gapMinutes, compact);
+        enriched.push({ ...item, gapPx, gapMinutes });
+      } else {
+        const gapPx = computeGapPx(gapMinutes, false);
+        enriched.push({ ...item, gapPx, gapMinutes });
+      }
       if (item.timeMs !== null) {
         prevTime = item.timeMs;
       }

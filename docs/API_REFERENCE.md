@@ -31,6 +31,14 @@ Source of truth: `CodexMonitor-lifeos/src-tauri/src/lib.rs` → `tauri::generate
 | `life_stream_cancel` | workspace_id: String, card_id: String | `Result<(), String>` | `life_stream/mod.rs` |
 | `life_stream_retry` | workspace_id: String, card_id: String | `Result<(), String>` | `life_stream/mod.rs` |
 | `life_stream_clarify` | workspace_id: String, card_id: String, option_id: String | `Result<(), String>` | `life_stream/mod.rs` |
+| `life_stream_task_dock_load` | workspace_id: String | `Result<TaskDockPayload, String>` | `life_stream/mod.rs` |
+| `life_stream_task_dock_save` | workspace_id: String, payload: TaskDockPayload | `Result<(), String>` | `life_stream/mod.rs` |
+| `life_stream_restructure` | workspace_id: String, card_id: String, action: CausalRestructureAction, source_node_ids: Option<Vec<String>>, target_mode: Option<String> | `Result<CausalRestructureResult, String>` | `life_stream/mod.rs` |
+| `life_stream_regenerate_semantics` | workspace_id: String, card_ids: Vec<String>, force_llm: Option<bool>, persist: Option<bool> | `Result<SemanticRegenerationResult, String>` | `life_stream/mod.rs` |
+| `life_stream_image_candidates` | workspace_id: String, card_id: String, node_id: Option<String> | `Result<ImageCandidateResponse, String>` | `life_stream/mod.rs` |
+| `life_stream_image_attach` | workspace_id: String, card_id: String, node_id: Option<String>, source_path: String, set_primary: Option<bool>, set_context_override: Option<bool>, context_hint: Option<String>, update_entity_file: Option<bool>, update_entity_embed: Option<bool> | `Result<ImageAttachResult, String>` | `life_stream/mod.rs` |
+| `life_stream_image_backfill` | workspace_id: String, update_embed_block: Option<bool> | `Result<ImageBackfillSummary, String>` | `life_stream/mod.rs` |
+| `life_stream_image_autofetch` | workspace_id: String, card_ids: Option<Vec<String>>, mode: Option<ImageAutoFetchMode>, update_entity_file: Option<bool>, update_entity_embed: Option<bool> | `Result<ImageAutoFetchSummary, String>` | `life_stream/mod.rs` |
 | `life_stream_read_log` | workspace_id: String, limit: Option<u32> | `Result<Vec<String>, String>` | `life_stream/mod.rs` |
 
 ### `life` module

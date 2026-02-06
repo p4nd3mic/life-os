@@ -14,7 +14,7 @@
 .life-stream-message-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
   max-width: none;
   position: relative;
@@ -23,8 +23,8 @@
 }
 
 .life-stream-message-list--cause-effect {
-  --life-stream-rail-x: 28px;
-  gap: 10px;
+  --life-stream-rail-x: 26px;
+  gap: 4px;
 }
 
 .life-stream-message-list::before {

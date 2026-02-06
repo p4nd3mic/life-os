@@ -2,13 +2,14 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   position: relative;
   z-index: 40;
 }
 
 .life-stream-header-controls .life-stream-day-picker,
-.life-stream-header-controls .life-stream-filters {
+.life-stream-header-controls .life-stream-filters,
+.life-stream-header-controls .life-stream-semantic-actions {
   padding: 8px 10px;
   background: transparent;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -29,6 +30,48 @@
 .life-stream-header-controls .life-stream-filters {
   position: relative;
   min-width: 120px;
+  flex-shrink: 0;
+}
+
+.life-stream-header-controls .life-stream-semantic-actions {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 46px;
+  min-width: 220px;
+  flex: 1 1 280px;
+  overflow: hidden;
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__status {
+  font-size: 0.74rem;
+  line-height: 1.2;
+  color: rgba(191, 219, 254, 0.95);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__status.is-error {
+  color: rgba(252, 165, 165, 0.96);
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__status--image {
+  color: rgba(186, 230, 253, 0.95);
 }
 
 .life-stream-header-controls .life-stream-filters__summary {

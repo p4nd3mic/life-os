@@ -2,39 +2,32 @@
   position: relative;
   display: flex;
   justify-content: flex-start;
-  padding: 12px 0 22px;
+  padding: 8px 0 14px;
   z-index: 1;
   scroll-margin-top: 120px;
-  content-visibility: auto;
-  contain-intrinsic-size: 320px;
 }
 
 .life-message-row__card {
   width: 100%;
   display: flex;
   justify-content: flex-start;
-  padding-left: clamp(58px, 7vw, 92px);
+  padding-left: clamp(54px, 6.8vw, 88px);
   padding-right: 8px;
 }
 
 .life-message-row--cause-effect .life-message-row__card {
-  padding-left: clamp(62px, 7vw, 98px);
+  padding-left: clamp(56px, 7vw, 90px);
 }
 
 .life-message-row__time {
   position: absolute;
-  top: 22px;
+  top: 16px;
   left: var(--life-stream-rail-x, 30px);
-  font-size: 11px;
-  color: var(--text-faint);
-  letter-spacing: 0.08em;
+  font-size: 9px;
+  color: rgba(198, 211, 228, 0.52);
+  letter-spacing: 0.07em;
   text-transform: uppercase;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(8, 12, 20, 0.65);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(10px);
-  transform: translate(12px, -50%);
+  transform: translate(10px, -50%);
   white-space: nowrap;
   z-index: 3;
   pointer-events: none;
@@ -43,14 +36,14 @@
 
 .life-message-row__dot {
   position: absolute;
-  top: 22px;
+  top: 16px;
   left: var(--life-stream-rail-x, 30px);
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
-  background: #ffffff;
-  border: 2px solid rgba(12, 18, 28, 0.9);
-  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.08);
+  background: rgba(226, 232, 240, 0.9);
+  border: 1px solid rgba(12, 18, 28, 0.9);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06);
   transform: translate(-50%, -50%);
   z-index: 3;
   pointer-events: none;
@@ -65,18 +58,18 @@
 
 @media (max-width: 900px) {
   .life-message-row__card {
-    padding-left: 52px;
+    padding-left: 46px;
     padding-right: 0;
   }
 
   .life-message-row__time {
     left: var(--life-stream-rail-x, 24px);
-    transform: translate(10px, -50%);
-    margin-left: 12px;
+    transform: translate(8px, -50%);
     text-align: left;
   }
 
   .life-message-row__dot {
     left: var(--life-stream-rail-x, 24px);
   }
+
 }

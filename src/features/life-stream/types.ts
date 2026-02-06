@@ -112,6 +112,16 @@ export type ImageBackfillSummary = {
   errors: string[];
 };
 
+export type ImageAutoFetchMode = "review_first" | "auto_apply";
+
+export type ImageAutoFetchSummary = {
+  reviewed: number;
+  applied: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+};
+
 export type CardStatValue = string | number | boolean | null;
 
 export type CardRequestMeta = {
@@ -143,7 +153,15 @@ export type CausalNodeRole =
 export type CausalNode = {
   id: string;
   text: string;
+  headline?: string;
+  summaryLine?: string;
+  title?: string;
+  bullets?: string[];
+  details?: string;
   role?: CausalNodeRole;
+  rank?: number;
+  groupType?: "primary" | "overflow_summary";
+  isImageApplicable?: boolean;
   image?: CardImage;
   entity?: EntityRef;
   occurredAt?: string;
@@ -163,11 +181,26 @@ export type CausalLayoutState = {
   expanded?: boolean;
 };
 
+export type CausalSemanticMode =
+  | "cause_effect"
+  | "action_reward"
+  | "statement_why"
+  | "question_response";
+
+export type CausalCompactionState = {
+  enabled: boolean;
+  threshold: number;
+  overflowCount?: number;
+};
+
 export type CausalCardContent = {
   leftNodes: CausalNode[];
   rightNodes: CausalNode[];
   links: CausalLink[];
   layout?: CausalLayoutState;
+  semanticMode?: CausalSemanticMode;
+  compaction?: CausalCompactionState;
+  transcriptSource?: "expanded" | "raw_response" | "both";
 };
 
 export type CausalRestructureAction =
@@ -179,6 +212,13 @@ export type CausalRestructureAction =
 export type CausalRestructureResult = {
   patch: StreamCardPatch;
   version: number;
+};
+
+export type SemanticRegenerationResult = {
+  updated: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
 };
 
 export type TaskDockItemKind = "task" | "reminder";

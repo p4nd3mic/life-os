@@ -5,9 +5,12 @@ import { streamStore } from "../state/streamStore";
 import type {
   CausalRestructureAction,
   CausalRestructureResult,
+  ImageAutoFetchMode,
+  ImageAutoFetchSummary,
   ImageAttachResult,
   ImageCandidateResponse,
   LifeStreamEvent,
+  SemanticRegenerationResult,
   StreamCard,
 } from "../types";
 
@@ -224,6 +227,29 @@ export function useLifeStream(workspaceId: string | null) {
     [workspaceId],
   );
 
+  const regenerateSemantics = useCallback(
+    async (
+      cardIds: string[],
+      options?: { forceLlm?: boolean; persist?: boolean },
+    ): Promise<SemanticRegenerationResult | null> => {
+      if (!workspaceId || cardIds.length === 0) {
+        return null;
+      }
+      try {
+        return await invoke<SemanticRegenerationResult>("life_stream_regenerate_semantics", {
+          workspaceId,
+          cardIds,
+          forceLlm: options?.forceLlm ?? true,
+          persist: options?.persist ?? true,
+        });
+      } catch (err) {
+        console.error("Failed to regenerate semantics:", err);
+        return null;
+      }
+    },
+    [workspaceId],
+  );
+
   const getImageCandidates = useCallback(
     async (cardId: string, nodeId?: string | null): Promise<ImageCandidateResponse | null> => {
       if (!workspaceId) return null;
@@ -271,6 +297,34 @@ export function useLifeStream(workspaceId: string | null) {
         return result;
       } catch (err) {
         console.error("Failed to attach image:", err);
+        return null;
+      }
+    },
+    [workspaceId],
+  );
+
+  const autoFetchImages = useCallback(
+    async (
+      cardIds: string[],
+      options?: {
+        mode?: ImageAutoFetchMode;
+        updateEntityFile?: boolean;
+        updateEntityEmbed?: boolean;
+      },
+    ): Promise<ImageAutoFetchSummary | null> => {
+      if (!workspaceId || cardIds.length === 0) {
+        return null;
+      }
+      try {
+        return await invoke<ImageAutoFetchSummary>("life_stream_image_autofetch", {
+          workspaceId,
+          cardIds,
+          mode: options?.mode ?? "review_first",
+          updateEntityFile: options?.updateEntityFile ?? true,
+          updateEntityEmbed: options?.updateEntityEmbed ?? false,
+        });
+      } catch (err) {
+        console.error("Failed to auto-fetch images:", err);
         return null;
       }
     },
@@ -326,8 +380,10 @@ export function useLifeStream(workspaceId: string | null) {
     retry,
     clarify,
     restructure,
+    regenerateSemantics,
     getImageCandidates,
     attachImage,
+    autoFetchImages,
     loadDay,
     goToPreviousDay,
     goToNextDay,

@@ -174,3 +174,51 @@ Full command list: [API_REFERENCE.md](API_REFERENCE.md)
 - [MCP_INTEGRATION.md](MCP_INTEGRATION.md)
 - [STATE_MANAGEMENT.md](STATE_MANAGEMENT.md)
 - [GOTCHAS.md](GOTCHAS.md)
+
+---
+
+## 2026-02 hardening update: image pipeline + semantic tooling
+
+### New image workflow modes (header actions)
+
+Life Stream now supports two image-fetch workflows for the current date:
+
+- `🖼️ Fetch images (ask)` → queues review tasks, does not auto-attach.
+- `⚡ Auto-apply images` → imports top candidate, attaches to card/node, updates catalog.
+
+These are available from:
+
+- `src/features/life-stream/components/navigation/LifeStreamHeaderControls.tsx`
+
+and backed by:
+
+- `life_stream_image_autofetch` (Tauri command)
+- `LifeStreamService::auto_fetch_images_for_cards` (Rust service)
+
+### Runtime + persistence paths used by image workflows
+
+- Catalog: `Obsidian/Indexes/images.catalog.v1.json`
+- Candidate cache inbox: `Obsidian/Runtime/ImageInbox/<entity_type>/<entity_slug>/`
+- Managed assets: `Obsidian/Assets/Entities/<entity_type>/<entity_slug>/`
+- Task reminders: `Obsidian/Runtime/life-stream.tasks.v1.json`
+
+### Entity sync behavior after auto/manual attach
+
+When `updateEntityFile=true`, Life Stream updates entity markdown frontmatter:
+
+- `image: "Assets/Entities/..."`
+
+When `updateEntityEmbed=true`, it also upserts:
+
+- `## Image`
+- `<!--life-stream:image-embed-->`
+- `![[Assets/Entities/...]]`
+
+### External photo roots (local-first candidate scan)
+
+Candidate scanning now supports both common drive spellings:
+
+- `/Volumes/YouTube 4TB/photos`
+- `/Volumes/YouTube 4TB/Photos`
+
+This avoids missing files when folder casing differs across setup scripts.

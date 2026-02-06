@@ -1,11 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use regex::Regex;
+use serde::Deserialize;
+use serde_json::{json, Value};
 use tauri::Emitter;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::time::timeout;
 
+use crate::backend::app_server::WorkspaceSession;
+use crate::codex_params::build_turn_start_params;
 use super::handlers::code_task::CodeTaskHandler;
 use super::handlers::delivery::DeliveryHandler;
 use super::handlers::media::MediaHandler;
@@ -17,7 +23,8 @@ use super::image_catalog::{
     upsert_context_override, upsert_entity_asset,
 };
 use super::image_manual::{
-    absolute_from_relative, find_image_candidates, import_image_asset, resolve_entity_for_card,
+    absolute_from_relative, find_image_candidates, import_image_asset, promote_entity_from_source_path,
+    resolve_entity_for_card,
     sync_entity_file_image, EntityFileSyncOptions, ResolvedEntity,
 };
 use super::images::ImageService;
@@ -329,6 +336,155 @@ impl LifeStreamService {
         Ok(CausalRestructureResult { patch, version })
     }
 
+    pub async fn regenerate_semantics_for_cards(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        card_ids: Vec<String>,
+        force_llm: bool,
+        persist: bool,
+        workspace_session: Option<Arc<WorkspaceSession>>,
+    ) -> Result<SemanticRegenerationResult, String> {
+        if force_llm && workspace_session.is_none() {
+            return Err(
+                "LLM semantic rewrite requires an active Codex app-server session.".to_string(),
+            );
+        }
+
+        let mut updated = 0usize;
+        let mut skipped = 0usize;
+        let mut failed = 0usize;
+        let mut errors = Vec::new();
+
+        for card_id in card_ids {
+            let existing = {
+                let cards_guard = self.cards.lock().await;
+                cards_guard.get(&card_id).cloned()
+            };
+
+            let Some(card) = existing else {
+                failed += 1;
+                errors.push(format!("{card_id}: card not found"));
+                continue;
+            };
+
+            if card.state != CardState::Complete {
+                skipped += 1;
+                continue;
+            }
+
+            let input_text = card
+                .original_input
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    card.expanded
+                        .as_ref()
+                        .and_then(|expanded| expanded.original_input.as_deref())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| card.title.clone());
+
+            if input_text.trim().is_empty() {
+                skipped += 1;
+                continue;
+            }
+
+            let enriched = EnrichedData {
+                title: card.title.clone(),
+                subtitle: card.subtitle.clone(),
+                summary: card.summary.clone(),
+                stats: card.stats.clone(),
+                entities: card.entities.clone(),
+                image: card.image.clone(),
+                expanded: card.expanded.clone(),
+                image_lookup: None,
+            };
+
+            let mut rebuilt = build_causal_content(
+                &card.id,
+                &card.card_type,
+                input_text.as_str(),
+                &card.occurred_at,
+                &enriched,
+            );
+
+            let output_text = card_output_text(&card);
+            if force_llm {
+                match rewrite_semantics_with_codex(
+                    workspace_session.clone(),
+                    workspace_path,
+                    &card,
+                    input_text.as_str(),
+                    output_text.as_deref(),
+                )
+                .await
+                {
+                    Ok(rewritten) => {
+                        rebuilt = rewritten;
+                    }
+                    Err(error) => {
+                        failed += 1;
+                        errors.push(format!("{card_id}: {error}"));
+                        continue;
+                    }
+                }
+            }
+
+            preserve_semantic_images(card.causal.as_ref(), &mut rebuilt);
+
+            let patch = StreamCardPatch {
+                layout_mode: Some(LayoutMode::CauseEffect),
+                causal: Some(rebuilt.clone()),
+                ..Default::default()
+            };
+
+            let version = emit_patch(
+                &card.id,
+                patch,
+                &self.cards,
+                &self.emitter,
+                &self.event_sink,
+            )
+            .await;
+
+            if version.is_some() {
+                if persist {
+                    if let Err(error) = self
+                        .obsidian
+                        .write_note_semantic_payload(
+                            workspace_path,
+                            obsidian_root,
+                            &card.id,
+                            &card.occurred_at,
+                            &rebuilt,
+                        )
+                        .await
+                    {
+                        failed += 1;
+                        errors.push(format!("{card_id}: {}", error));
+                        continue;
+                    }
+                }
+                updated += 1;
+            } else {
+                failed += 1;
+                errors.push(format!("{card_id}: unable to apply patch"));
+            }
+        }
+
+        Ok(SemanticRegenerationResult {
+            updated,
+            skipped,
+            failed,
+            errors,
+        })
+    }
+
     pub async fn image_candidates(
         &self,
         workspace_path: &str,
@@ -378,10 +534,11 @@ impl LifeStreamService {
             .obsidian
             .resolve_root_path(workspace_path, obsidian_root)
             .map_err(|err| err.to_string())?;
-        let entity = resolve_entity_for_card(&existing_card, node_id);
+        let source_path_buf = std::path::Path::new(source_path);
+        let resolved_entity = resolve_entity_for_card(&existing_card, node_id);
+        let entity = promote_entity_from_source_path(&resolved_entity, source_path_buf);
 
-        let imported_asset =
-            import_image_asset(&root, &entity, std::path::Path::new(source_path)).await?;
+        let imported_asset = import_image_asset(&root, &entity, source_path_buf).await?;
         let mut catalog = load_catalog(&root).await?;
         let stored_asset = upsert_entity_asset(
             &mut catalog,
@@ -571,6 +728,210 @@ impl LifeStreamService {
                     summary.errors.push(error);
                 }
             }
+        }
+
+        Ok(summary)
+    }
+
+    pub async fn auto_fetch_images_for_cards(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        card_ids: Vec<String>,
+        mode: ImageAutoFetchMode,
+        update_entity_file: bool,
+        update_entity_embed: bool,
+    ) -> Result<ImageAutoFetchSummary, String> {
+        let root = self
+            .obsidian
+            .resolve_root_path(workspace_path, obsidian_root)
+            .map_err(|err| err.to_string())?;
+
+        let cards_to_process = {
+            let cards_guard = self.cards.lock().await;
+            let target_ids: Vec<String> = if card_ids.is_empty() {
+                cards_guard.keys().cloned().collect()
+            } else {
+                card_ids
+            };
+
+            target_ids
+                .into_iter()
+                .filter_map(|id| cards_guard.get(&id).cloned())
+                .collect::<Vec<_>>()
+        };
+
+        let mut summary = ImageAutoFetchSummary {
+            reviewed: 0,
+            applied: 0,
+            skipped: 0,
+            failed: 0,
+            errors: Vec::new(),
+        };
+        let mut catalog = load_catalog(&root).await?;
+        let mut catalog_changed = false;
+
+        for card in cards_to_process {
+            let target_node_id = auto_image_target_node_id(&card);
+            if target_node_id.is_none() && is_image_ready(card.image.as_ref()) {
+                summary.skipped += 1;
+                continue;
+            }
+            let resolved_entity = resolve_entity_for_card(&card, target_node_id.as_deref());
+            let candidates =
+                find_image_candidates(&root, &resolved_entity, 12, self.tmdb_api_key.as_deref())
+                    .await
+                    .map_err(|error| format!("{}: {}", card.id, error))?;
+            let Some(top_candidate) = candidates.first() else {
+                summary.skipped += 1;
+                continue;
+            };
+
+            let promoted_entity = promote_entity_from_source_path(
+                &resolved_entity,
+                std::path::Path::new(top_candidate.source_path.as_str()),
+            );
+
+            match mode {
+                ImageAutoFetchMode::ReviewFirst => {
+                    let task = TaskDockItem {
+                        id: format!("task_{}", uuid::Uuid::new_v4().simple()),
+                        key: format!(
+                            "review-image-candidates:{}:{}",
+                            card.id,
+                            target_node_id.as_deref().unwrap_or("card")
+                        ),
+                        text: format!("Review image candidates for {}", promoted_entity.entity_name),
+                        kind: TaskDockItemKind::Reminder,
+                        completed: false,
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                        updated_at: chrono::Utc::now().to_rfc3339(),
+                        target_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
+                        source_card_id: Some(card.id.clone()),
+                        source_node_id: target_node_id.clone(),
+                    };
+                    if let Err(error) = super::task_dock::upsert_task_dock_item_at_root(&root, task).await {
+                        summary.failed += 1;
+                        summary
+                            .errors
+                            .push(format!("{}: failed to queue review task: {}", card.id, error));
+                    } else {
+                        summary.reviewed += 1;
+                    }
+                }
+                ImageAutoFetchMode::AutoApply => {
+                    if promoted_entity.entity_type == "general" {
+                        summary.skipped += 1;
+                        continue;
+                    }
+                    let import_result = import_image_asset(
+                        &root,
+                        &promoted_entity,
+                        std::path::Path::new(top_candidate.source_path.as_str()),
+                    )
+                    .await;
+                    let imported_asset = match import_result {
+                        Ok(asset) => asset,
+                        Err(error) => {
+                            summary.failed += 1;
+                            summary
+                                .errors
+                                .push(format!("{}: failed to import image: {}", card.id, error));
+                            continue;
+                        }
+                    };
+
+                    let stored_asset = upsert_entity_asset(
+                        &mut catalog,
+                        &promoted_entity.entity_key,
+                        &promoted_entity.entity_type,
+                        &promoted_entity.entity_name,
+                        &promoted_entity.entity_slug,
+                        imported_asset,
+                        true,
+                    );
+                    catalog_changed = true;
+
+                    let relative_path = stored_asset.relative_path.clone();
+                    if update_entity_file || update_entity_embed {
+                        if let Err(error) = sync_entity_file_image(
+                            &root,
+                            &promoted_entity,
+                            &relative_path,
+                            EntityFileSyncOptions {
+                                update_frontmatter: update_entity_file,
+                                update_embed_block: update_entity_embed,
+                            },
+                        )
+                        .await
+                        {
+                            summary.errors.push(format!(
+                                "{}: entity metadata sync failed: {}",
+                                card.id, error
+                            ));
+                        }
+                    }
+
+                    let image = CardImage {
+                        url: Some(
+                            absolute_from_relative(&root, &relative_path)
+                                .to_string_lossy()
+                                .to_string(),
+                        ),
+                        status: ImageStatus::Ready,
+                        source: Some("auto_fetch".to_string()),
+                    };
+
+                    let mut patch = StreamCardPatch {
+                        image: Some(image.clone()),
+                        ..Default::default()
+                    };
+                    if let Some(mut causal) = card.causal.clone() {
+                        if let Some(node_id) = target_node_id.as_deref() {
+                            if let Some(node) = causal
+                                .left_nodes
+                                .iter_mut()
+                                .chain(causal.right_nodes.iter_mut())
+                                .find(|node| node.id == node_id)
+                            {
+                                node.image = Some(image.clone());
+                                node.entity = Some(EntityRef {
+                                    entity_type: promoted_entity.entity_type.clone(),
+                                    id: None,
+                                    name: promoted_entity.entity_name.clone(),
+                                    link: Some(entity_link_for(
+                                        promoted_entity.entity_type.as_str(),
+                                        promoted_entity.entity_name.as_str(),
+                                    )),
+                                });
+                            }
+                        }
+                        patch.causal = Some(causal);
+                    }
+
+                    if emit_patch(
+                        &card.id,
+                        patch,
+                        &self.cards,
+                        &self.emitter,
+                        &self.event_sink,
+                    )
+                    .await
+                    .is_some()
+                    {
+                        summary.applied += 1;
+                    } else {
+                        summary.failed += 1;
+                        summary
+                            .errors
+                            .push(format!("{}: failed to apply image patch", card.id));
+                    }
+                }
+            }
+        }
+
+        if catalog_changed {
+            save_catalog(&root, &catalog).await?;
         }
 
         Ok(summary)
@@ -935,6 +1296,880 @@ async fn process_card(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LlmSemanticRewritePayload {
+    #[serde(default)]
+    semantic_mode: Option<String>,
+    #[serde(default)]
+    left: Option<LlmSemanticNodePayload>,
+    #[serde(default)]
+    right: Vec<LlmSemanticNodePayload>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LlmSemanticNodePayload {
+    headline: String,
+    #[serde(default)]
+    summary_line: Option<String>,
+    #[serde(default)]
+    bullets: Vec<String>,
+}
+
+fn sanitize_semantic_text(value: &str, max_chars: usize) -> Option<String> {
+    let cleaned = value
+        .trim()
+        .trim_matches(|ch| ch == '"' || ch == '\'' || ch == '`')
+        .replace('\u{00a0}', " ");
+    let collapsed = cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(truncate_text_to_chars(collapsed.as_str(), max_chars))
+}
+
+fn truncate_text_to_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    format!("{}…", value.chars().take(max_chars).collect::<String>())
+}
+
+fn strip_json_fence(value: &str) -> &str {
+    let trimmed = value.trim();
+    if let Some(fenced) = trimmed.strip_prefix("```json").and_then(|v| v.strip_suffix("```")) {
+        return fenced.trim();
+    }
+    if let Some(fenced) = trimmed.strip_prefix("```").and_then(|v| v.strip_suffix("```")) {
+        return fenced.trim();
+    }
+    trimmed
+}
+
+fn extract_json_object(value: &str) -> Option<String> {
+    let trimmed = strip_json_fence(value);
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Some(trimmed.to_string());
+    }
+    let start = trimmed.find('{')?;
+    let end = trimmed.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some(trimmed[start..=end].to_string())
+}
+
+fn parse_llm_semantic_payload(text: &str) -> Result<LlmSemanticRewritePayload, String> {
+    let json_candidate = extract_json_object(text)
+        .ok_or_else(|| "LLM semantic rewrite did not return JSON.".to_string())?;
+    serde_json::from_str::<LlmSemanticRewritePayload>(&json_candidate)
+        .map_err(|error| format!("Invalid semantic JSON payload: {error}"))
+}
+
+fn parse_semantic_mode(value: Option<&str>) -> Option<CausalSemanticMode> {
+    let normalized = value?.trim().to_lowercase();
+    match normalized.as_str() {
+        "cause_effect" => Some(CausalSemanticMode::CauseEffect),
+        "action_reward" => Some(CausalSemanticMode::ActionReward),
+        "statement_why" => Some(CausalSemanticMode::StatementWhy),
+        "question_response" => Some(CausalSemanticMode::QuestionResponse),
+        _ => None,
+    }
+}
+
+fn mode_to_roles(mode: CausalSemanticMode) -> (CausalNodeRole, CausalNodeRole) {
+    match mode {
+        CausalSemanticMode::CauseEffect => (CausalNodeRole::Cause, CausalNodeRole::Effect),
+        CausalSemanticMode::ActionReward => (CausalNodeRole::Action, CausalNodeRole::Reward),
+        CausalSemanticMode::StatementWhy => (CausalNodeRole::Cause, CausalNodeRole::Response),
+        CausalSemanticMode::QuestionResponse => {
+            (CausalNodeRole::Question, CausalNodeRole::Response)
+        }
+    }
+}
+
+fn card_output_text(card: &StreamCard) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(expanded) = &card.expanded {
+        for section in &expanded.sections {
+            let title = section.title.trim();
+            let body = section.body.trim();
+            if body.is_empty() {
+                continue;
+            }
+            if title.is_empty() {
+                parts.push(body.to_string());
+            } else {
+                parts.push(format!("## {title}\n{body}"));
+            }
+        }
+    }
+
+    if !parts.is_empty() {
+        return Some(parts.join("\n\n"));
+    }
+
+    card.assistant_preview
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            card.summary
+                .as_ref()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn semantic_rewrite_prompt(
+    card: &StreamCard,
+    input_text: &str,
+    output_text: Option<&str>,
+) -> String {
+    let output = output_text.unwrap_or("");
+    format!(
+        r#"Rewrite this Life Stream item into concise semantic graph nodes.
+
+Return JSON only, no markdown fences.
+Schema:
+{{
+  "semanticMode": "cause_effect|action_reward|statement_why|question_response",
+  "left": {{
+    "headline": "short title",
+    "summaryLine": "optional one-liner",
+    "bullets": ["short supporting point"]
+  }},
+  "right": [
+    {{
+      "headline": "standalone thought, never a fragment",
+      "summaryLine": "optional one-liner",
+      "bullets": ["2-5 concise bullets with concrete details"]
+    }}
+  ]
+}}
+
+Rules:
+- Keep right nodes standalone and complete (no trailing colon fragments).
+- Remove duplicate/near-duplicate nodes.
+- Strip assistant boilerplate and greetings.
+- Prefer quality and coherence over speed.
+- Include concrete details in bullets.
+- Never echo system status messages, test acknowledgements, or speaker names.
+- Headlines must read as complete ideas on their own.
+- Do not include image guidance.
+- Keep right node count <= 7.
+
+Context:
+cardType: {}
+title: {}
+input:
+{}
+
+output:
+{}
+"#,
+        format!("{:?}", card.card_type).to_lowercase(),
+        card.title,
+        input_text.trim(),
+        output.trim(),
+    )
+}
+
+fn semantic_rewrite_retry_prompt(
+    card: &StreamCard,
+    input_text: &str,
+    output_text: Option<&str>,
+    previous_nodes: &[CausalNode],
+) -> String {
+    let output = output_text.unwrap_or("");
+    let previous = if previous_nodes.is_empty() {
+        "none".to_string()
+    } else {
+        previous_nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                let headline = node
+                    .headline
+                    .as_deref()
+                    .or(node.title.as_deref())
+                    .unwrap_or(node.text.as_str());
+                format!("{}. {}", index + 1, headline)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r#"The previous semantic rewrite had low quality. Rewrite again with higher precision.
+
+Return STRICT JSON only (no prose, no markdown fences) using this schema:
+{{
+  "semanticMode": "cause_effect|action_reward|statement_why|question_response",
+  "left": {{
+    "headline": "short title",
+    "summaryLine": "optional one-liner",
+    "bullets": ["short supporting point"]
+  }},
+  "right": [
+    {{
+      "headline": "complete standalone thought",
+      "summaryLine": "optional one-liner",
+      "bullets": ["2-5 concise concrete details"]
+    }}
+  ]
+}}
+
+Critical constraints:
+- Do NOT output fragments ending with ":".
+- Do NOT include greetings, status checks, usernames, or assistant chatter.
+- Do NOT duplicate the same point across nodes.
+- Each right headline must be meaningful alone.
+- Prefer fewer, stronger nodes over noisy nodes.
+- Keep right node count <= 7.
+
+Previous low-quality nodes:
+{}
+
+Context:
+cardType: {}
+title: {}
+input:
+{}
+
+output:
+{}
+"#,
+        previous,
+        format!("{:?}", card.card_type).to_lowercase(),
+        card.title,
+        input_text.trim(),
+        output.trim(),
+    )
+}
+
+fn llm_bullets_from_payload(node: &LlmSemanticNodePayload, headline: &str) -> Vec<String> {
+    let normalized_headline = semantic_headline_key(headline);
+    let mut seen = HashSet::new();
+    let mut bullets = Vec::new();
+
+    for item in &node.bullets {
+        let cleaned = sanitize_semantic_text(item.as_str(), 200);
+        let Some(cleaned) = cleaned else {
+            continue;
+        };
+        if is_meta_boilerplate_headline(cleaned.as_str()) {
+            continue;
+        }
+        let key = semantic_headline_key(cleaned.as_str());
+        if key.is_empty() || key == normalized_headline || !seen.insert(key) {
+            continue;
+        }
+        bullets.push(cleaned);
+    }
+
+    if bullets.is_empty() {
+        if let Some(summary) = node
+            .summary_line
+            .as_deref()
+            .and_then(|value| sanitize_semantic_text(value, 180))
+        {
+            let summary_key = semantic_headline_key(summary.as_str());
+            if !summary_key.is_empty() && summary_key != normalized_headline {
+                bullets.push(summary);
+            }
+        }
+    }
+
+    bullets
+}
+
+fn rewrite_meta_headline(headline: &str, bullets: &[String]) -> Option<String> {
+    let normalized = semantic_headline_key(headline);
+    if normalized.contains("codex is responding")
+        || normalized.contains("status online")
+        || normalized.contains("receiving your messages")
+    {
+        return Some("Codex connectivity check passed".to_string());
+    }
+    if normalized.contains("next test idea") {
+        return None;
+    }
+    for bullet in bullets {
+        let candidate = rewrite_fragmentary_headline(bullet.as_str(), None);
+        if !candidate.is_empty()
+            && !is_meta_boilerplate_headline(candidate.as_str())
+            && !is_weak_semantic_fragment(candidate.as_str())
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn normalize_llm_right_nodes(
+    card_id: &str,
+    right_nodes: &[LlmSemanticNodePayload],
+    role: CausalNodeRole,
+) -> Vec<CausalNode> {
+    let mut normalized_nodes = Vec::new();
+    let mut seen = HashSet::new();
+
+    for node in right_nodes {
+        let headline_seed = sanitize_semantic_text(node.headline.as_str(), 150);
+        let Some(headline_seed) = headline_seed else {
+            continue;
+        };
+        let mut bullets = llm_bullets_from_payload(node, headline_seed.as_str());
+        let mut headline = rewrite_fragmentary_headline(headline_seed.as_str(), Some(&bullets));
+        if is_meta_boilerplate_headline(headline.as_str()) {
+            if let Some(rewritten) = rewrite_meta_headline(headline.as_str(), &bullets) {
+                headline = rewritten;
+            } else {
+                continue;
+            }
+        }
+        if is_weak_semantic_fragment(headline.as_str()) {
+            if let Some(first_bullet) = bullets.first() {
+                headline = rewrite_fragmentary_headline(
+                    format!("{headline} — {}", first_bullet).as_str(),
+                    Some(&bullets),
+                );
+            }
+        }
+        if is_weak_semantic_fragment(headline.as_str()) || is_meta_boilerplate_headline(headline.as_str()) {
+            continue;
+        }
+
+        let headline_key = semantic_headline_key(headline.as_str());
+        if headline_key.is_empty() || !seen.insert(headline_key) {
+            continue;
+        }
+
+        if bullets.len() > 6 {
+            bullets.truncate(6);
+        }
+        let details = if bullets.is_empty() {
+            node.summary_line
+                .as_deref()
+                .and_then(|value| sanitize_semantic_text(value, 220))
+        } else {
+            Some(
+                bullets
+                    .iter()
+                    .map(|item| format!("- {item}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        };
+        let summary_line = node
+            .summary_line
+            .as_deref()
+            .and_then(|value| sanitize_semantic_text(value, 180))
+            .filter(|summary| semantic_headline_key(summary.as_str()) != semantic_headline_key(headline.as_str()));
+
+        let text = if bullets.is_empty() {
+            headline.clone()
+        } else {
+            format!("{}: {}", headline, bullets.join("; "))
+        };
+
+        normalized_nodes.push(CausalNode {
+            id: format!("{}:right:{}", card_id, normalized_nodes.len()),
+            text,
+            headline: Some(headline.clone()),
+            summary_line,
+            title: Some(headline),
+            bullets: (!bullets.is_empty()).then_some(bullets),
+            details,
+            role: Some(role.clone()),
+            rank: Some((normalized_nodes.len() + 1) as u32),
+            group_type: Some(CausalGroupType::Primary),
+            is_image_applicable: false,
+            image: None,
+            entity: None,
+            occurred_at: None,
+        });
+    }
+
+    normalized_nodes
+}
+
+fn llm_nodes_need_retry(nodes: &[CausalNode]) -> bool {
+    if nodes.is_empty() {
+        return true;
+    }
+
+    let mut weak = 0usize;
+    let mut meta = 0usize;
+    let mut duplicate = 0usize;
+    let mut seen = HashSet::new();
+
+    for node in nodes {
+        let headline = node
+            .headline
+            .as_deref()
+            .or(node.title.as_deref())
+            .unwrap_or(node.text.as_str());
+
+        if is_meta_boilerplate_headline(headline) {
+            meta += 1;
+            continue;
+        }
+        if is_weak_semantic_fragment(headline) {
+            weak += 1;
+        }
+        let key = semantic_headline_key(headline);
+        if key.is_empty() || !seen.insert(key) {
+            duplicate += 1;
+        }
+    }
+
+    meta > 0 || weak > 0 || duplicate > 0
+}
+
+async fn rewrite_semantics_with_codex_attempt(
+    session: Arc<WorkspaceSession>,
+    workspace_path: &str,
+    prompt: String,
+) -> Result<LlmSemanticRewritePayload, String> {
+    let raw = run_codex_semantic_rewrite(session, workspace_path, prompt).await?;
+    parse_llm_semantic_payload(raw.as_str())
+}
+
+fn extract_thread_id_from_response(response: &Value) -> Option<String> {
+    response
+        .get("result")
+        .and_then(|result| result.get("threadId"))
+        .or_else(|| {
+            response
+                .get("result")
+                .and_then(|result| result.get("thread"))
+                .and_then(|thread| thread.get("id"))
+        })
+        .or_else(|| response.get("threadId"))
+        .or_else(|| response.get("thread").and_then(|thread| thread.get("id")))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
+fn extract_delta_text(event: &Value) -> Option<String> {
+    event
+        .get("params")
+        .and_then(|params| params.get("delta"))
+        .and_then(|delta| delta.as_str())
+        .map(|delta| delta.to_string())
+}
+
+fn extract_message_text_from_event(event: &Value) -> Option<String> {
+    fn collect(value: &Value, output: &mut Vec<String>) {
+        match value {
+            Value::String(text) => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    output.push(trimmed.to_string());
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    collect(item, output);
+                }
+            }
+            Value::Object(map) => {
+                if let Some(text) = map.get("text").and_then(|value| value.as_str()) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        output.push(trimmed.to_string());
+                    }
+                }
+                if let Some(value) = map.get("content") {
+                    collect(value, output);
+                }
+                if let Some(value) = map.get("output") {
+                    collect(value, output);
+                }
+                if let Some(value) = map.get("message") {
+                    collect(value, output);
+                }
+                if let Some(value) = map.get("item") {
+                    collect(value, output);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let params = event.get("params")?;
+    let mut chunks = Vec::new();
+    collect(params, &mut chunks);
+    if chunks.is_empty() {
+        None
+    } else {
+        Some(chunks.join("\n"))
+    }
+}
+
+async fn run_codex_semantic_rewrite(
+    session: Arc<WorkspaceSession>,
+    cwd: &str,
+    prompt: String,
+) -> Result<String, String> {
+    let thread_result = session
+        .send_request(
+            "thread/start",
+            json!({
+                "cwd": cwd,
+                "approvalPolicy": "never"
+            }),
+        )
+        .await?;
+
+    if let Some(error) = thread_result.get("error") {
+        let message = error
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Unknown error starting semantic rewrite thread");
+        return Err(message.to_string());
+    }
+
+    let thread_id = extract_thread_id_from_response(&thread_result)
+        .ok_or_else(|| "Failed to resolve thread id for semantic rewrite".to_string())?;
+    let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+
+    {
+        let mut callbacks = session.background_thread_callbacks.lock().await;
+        callbacks.insert(thread_id.clone(), tx);
+    }
+
+    let turn_params = build_turn_start_params(
+        &thread_id,
+        vec![json!({ "type": "text", "text": prompt })],
+        cwd,
+        "never",
+        json!({ "type": "readOnly" }),
+        None,
+        Some("high".to_string()),
+        None,
+        None,
+    );
+    let turn_start_result = match session.send_request("turn/start", turn_params).await {
+        Ok(result) => result,
+        Err(error) => {
+            {
+                let mut callbacks = session.background_thread_callbacks.lock().await;
+                callbacks.remove(&thread_id);
+            }
+            let _ = session
+                .send_request("thread/archive", json!({ "threadId": thread_id }))
+                .await;
+            return Err(error);
+        }
+    };
+    if let Some(error) = turn_start_result.get("error") {
+        let message = error
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Semantic rewrite turn failed to start");
+        {
+            let mut callbacks = session.background_thread_callbacks.lock().await;
+            callbacks.remove(&thread_id);
+        }
+        let _ = session
+            .send_request("thread/archive", json!({ "threadId": thread_id }))
+            .await;
+        return Err(message.to_string());
+    }
+
+    let mut output = String::new();
+    let collect_result = timeout(Duration::from_secs(75), async {
+        loop {
+            let Some(event) = rx.recv().await else {
+                break Ok::<(), String>(());
+            };
+            let method = event.get("method").and_then(|value| value.as_str()).unwrap_or("");
+            match method {
+                "item/agentMessage/delta" => {
+                    if let Some(delta) = extract_delta_text(&event) {
+                        output.push_str(delta.as_str());
+                    }
+                }
+                "item/agentMessage" | "item/completed" => {
+                    if output.trim().is_empty() {
+                        if let Some(full_text) = extract_message_text_from_event(&event) {
+                            output.push_str(full_text.as_str());
+                        }
+                    }
+                }
+                "turn/completed" => break Ok::<(), String>(()),
+                "turn/error" => {
+                    let message = event
+                        .get("params")
+                        .and_then(|params| params.get("error"))
+                        .and_then(|error| error.as_str())
+                        .unwrap_or("Semantic rewrite turn failed");
+                    break Err(message.to_string());
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+
+    {
+        let mut callbacks = session.background_thread_callbacks.lock().await;
+        callbacks.remove(&thread_id);
+    }
+    let _ = session
+        .send_request("thread/archive", json!({ "threadId": thread_id }))
+        .await;
+
+    match collect_result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(error),
+        Err(_) => return Err("Timed out waiting for semantic rewrite response".to_string()),
+    }
+
+    let trimmed = output.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("Semantic rewrite returned empty output".to_string());
+    }
+    Ok(trimmed)
+}
+
+async fn rewrite_semantics_with_codex(
+    session: Option<Arc<WorkspaceSession>>,
+    workspace_path: &str,
+    card: &StreamCard,
+    input_text: &str,
+    output_text: Option<&str>,
+) -> Result<CausalCardContent, String> {
+    let session = session.ok_or_else(|| "workspace session unavailable".to_string())?;
+    let first_prompt = semantic_rewrite_prompt(card, input_text, output_text);
+    let mut active_payload = rewrite_semantics_with_codex_attempt(
+        session.clone(),
+        workspace_path,
+        first_prompt,
+    )
+    .await?;
+
+    let mut semantic_mode = parse_semantic_mode(active_payload.semantic_mode.as_deref())
+        .or_else(|| card.causal.as_ref().and_then(|causal| causal.semantic_mode.clone()))
+        .unwrap_or(CausalSemanticMode::StatementWhy);
+    let mut right_role = mode_to_roles(semantic_mode.clone()).1;
+    let mut normalized_right_nodes =
+        normalize_llm_right_nodes(card.id.as_str(), &active_payload.right, right_role.clone());
+
+    if llm_nodes_need_retry(&normalized_right_nodes) {
+        let retry_prompt = semantic_rewrite_retry_prompt(
+            card,
+            input_text,
+            output_text,
+            &normalized_right_nodes,
+        );
+        let retry_payload = rewrite_semantics_with_codex_attempt(
+            session,
+            workspace_path,
+            retry_prompt,
+        )
+        .await?;
+        active_payload = retry_payload;
+        semantic_mode = parse_semantic_mode(active_payload.semantic_mode.as_deref())
+            .or(Some(semantic_mode))
+            .unwrap_or(CausalSemanticMode::StatementWhy);
+        right_role = mode_to_roles(semantic_mode.clone()).1;
+        normalized_right_nodes =
+            normalize_llm_right_nodes(card.id.as_str(), &active_payload.right, right_role.clone());
+    }
+
+    if normalized_right_nodes.is_empty() || llm_nodes_need_retry(&normalized_right_nodes) {
+        return Err(
+            "LLM rewrite returned low-quality semantic nodes. Try rebuilding again after refining source content."
+                .to_string(),
+        );
+    }
+
+    let (left_role, _) = mode_to_roles(semantic_mode.clone());
+
+    let base_left = card
+        .causal
+        .as_ref()
+        .and_then(|causal| causal.left_nodes.first())
+        .cloned();
+
+    let left_payload = active_payload.left.as_ref();
+    let left_headline = left_payload
+        .and_then(|node| sanitize_semantic_text(node.headline.as_str(), 140))
+        .or_else(|| {
+            base_left
+                .as_ref()
+                .and_then(|node| node.headline.as_ref().cloned())
+                .and_then(|value| sanitize_semantic_text(value.as_str(), 140))
+        })
+        .or_else(|| sanitize_semantic_text(card.title.as_str(), 140))
+        .unwrap_or_else(|| "Summary".to_string());
+
+    let left_bullets = left_payload
+        .map(|node| {
+            node.bullets
+                .iter()
+                .filter_map(|item| sanitize_semantic_text(item, 180))
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty());
+
+    let left_summary = left_payload
+        .and_then(|node| node.summary_line.as_deref())
+        .and_then(|value| sanitize_semantic_text(value, 180));
+
+    let left_node = CausalNode {
+        id: format!("{}:left:0", card.id),
+        text: input_text.trim().to_string(),
+        headline: Some(left_headline.clone()),
+        summary_line: left_summary,
+        title: Some(left_headline),
+        bullets: left_bullets,
+        details: Some(input_text.trim().to_string()).filter(|value| !value.is_empty()),
+        role: Some(left_role),
+        rank: Some(1),
+        group_type: Some(CausalGroupType::Primary),
+        is_image_applicable: true,
+        image: base_left.as_ref().and_then(|node| node.image.clone()),
+        entity: base_left.and_then(|node| node.entity.clone()),
+        occurred_at: Some(card.occurred_at.clone()),
+    };
+
+    let mut right_nodes = normalized_right_nodes;
+    normalize_causal_node_titles(&mut right_nodes);
+
+    let left_node_id = left_node.id.clone();
+    let links = right_nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| CausalLink {
+            id: Some(format!("{}:link:{index}", card.id)),
+            from_id: left_node_id.clone(),
+            to_id: node.id.clone(),
+            label: None,
+            strength: Some(if index < DEFAULT_TOP_LINK_LIMIT {
+                1.0
+            } else {
+                0.55
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    let has_dense_right_nodes = right_nodes.len() > DEFAULT_VISIBLE_RIGHT_COUNT;
+    let has_dense_links = links.len() > DEFAULT_TOP_LINK_LIMIT;
+    let layout = if has_dense_right_nodes || has_dense_links {
+        Some(CausalLayoutState {
+            visible_right_count: has_dense_right_nodes
+                .then_some(DEFAULT_VISIBLE_RIGHT_COUNT as u32),
+            top_link_limit: has_dense_links.then_some(DEFAULT_TOP_LINK_LIMIT as u32),
+            expanded: has_dense_right_nodes.then_some(false),
+        })
+    } else {
+        None
+    };
+    let overflow_count = right_nodes
+        .len()
+        .checked_sub(DEFAULT_VISIBLE_RIGHT_COUNT)
+        .map(|count| count as u32)
+        .filter(|count| *count > 0);
+
+    Ok(CausalCardContent {
+        left_nodes: vec![left_node],
+        right_nodes,
+        links,
+        layout,
+        semantic_mode: Some(semantic_mode),
+        compaction: Some(CausalCompactionState {
+            enabled: overflow_count.is_some(),
+            threshold: DEFAULT_VISIBLE_RIGHT_COUNT as u32,
+            overflow_count,
+        }),
+        transcript_source: Some(CausalTranscriptSource::Both),
+    })
+}
+
+fn normalize_node_key(node: &CausalNode) -> Option<String> {
+    let candidate = node
+        .headline
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .or_else(|| node.title.as_ref().map(|value| value.trim()))
+        .or_else(|| Some(node.text.trim()))?;
+    let normalized = candidate
+        .to_lowercase()
+        .replace(|ch: char| !ch.is_ascii_alphanumeric() && !ch.is_whitespace(), " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn preserve_semantic_images(existing: Option<&CausalCardContent>, rebuilt: &mut CausalCardContent) {
+    let Some(existing) = existing else {
+        return;
+    };
+
+    if let (Some(previous_left), Some(next_left)) =
+        (existing.left_nodes.first(), rebuilt.left_nodes.first_mut())
+    {
+        if next_left.image.is_none() {
+            next_left.image = previous_left.image.clone();
+        }
+        if next_left.entity.is_none() {
+            next_left.entity = previous_left.entity.clone();
+        }
+        if next_left.image.is_some() {
+            next_left.is_image_applicable = true;
+        }
+    }
+
+    let mut by_key: HashMap<String, &CausalNode> = HashMap::new();
+    for node in &existing.right_nodes {
+        if let Some(key) = normalize_node_key(node) {
+            by_key.entry(key).or_insert(node);
+        }
+    }
+
+    for (index, node) in rebuilt.right_nodes.iter_mut().enumerate() {
+        if node.image.is_some() && node.entity.is_some() {
+            continue;
+        }
+
+        let match_by_key = normalize_node_key(node).and_then(|key| by_key.get(&key).copied());
+        let match_by_rank = existing
+            .right_nodes
+            .iter()
+            .find(|candidate| candidate.rank == node.rank)
+            .or_else(|| existing.right_nodes.get(index));
+        let source = match_by_key.or(match_by_rank);
+        if let Some(previous) = source {
+            if node.image.is_none() {
+                node.image = previous.image.clone();
+            }
+            if node.entity.is_none() {
+                node.entity = previous.entity.clone();
+            }
+            if node.image.is_some() {
+                node.is_image_applicable = true;
+            }
+        }
+    }
 }
 
 async fn emit_step(
@@ -1642,7 +2877,8 @@ const DEFAULT_TOP_LINK_LIMIT: usize = 3;
 enum CausalFrameProfile {
     CauseEffect,
     ActionReward,
-    ClaimResponse,
+    StatementWhy,
+    QuestionResponse,
 }
 
 fn causal_frame_profile(card_type: &CardType) -> CausalFrameProfile {
@@ -1650,8 +2886,9 @@ fn causal_frame_profile(card_type: &CardType) -> CausalFrameProfile {
         CardType::DeliveryOrder | CardType::DeliverySession | CardType::Meal => {
             CausalFrameProfile::ActionReward
         }
-        CardType::Thought | CardType::Query | CardType::MediaAdd | CardType::Music => {
-            CausalFrameProfile::ClaimResponse
+        CardType::Query => CausalFrameProfile::QuestionResponse,
+        CardType::Thought | CardType::MediaAdd | CardType::Music => {
+            CausalFrameProfile::StatementWhy
         }
         _ => CausalFrameProfile::CauseEffect,
     }
@@ -1667,15 +2904,28 @@ fn resolve_causal_frame_profile(
         return explicit;
     }
 
-    if looks_like_claim_or_question_input(input) {
-        return CausalFrameProfile::ClaimResponse;
+    if looks_like_question_input(input) {
+        return CausalFrameProfile::QuestionResponse;
+    }
+
+    if looks_like_statement_or_claim_input(input) {
+        return CausalFrameProfile::StatementWhy;
     }
 
     if expanded_contains_markdown_headings(enriched) {
-        return CausalFrameProfile::ClaimResponse;
+        return CausalFrameProfile::StatementWhy;
     }
 
     CausalFrameProfile::CauseEffect
+}
+
+fn infer_semantic_mode(frame: CausalFrameProfile) -> CausalSemanticMode {
+    match frame {
+        CausalFrameProfile::CauseEffect => CausalSemanticMode::CauseEffect,
+        CausalFrameProfile::ActionReward => CausalSemanticMode::ActionReward,
+        CausalFrameProfile::StatementWhy => CausalSemanticMode::StatementWhy,
+        CausalFrameProfile::QuestionResponse => CausalSemanticMode::QuestionResponse,
+    }
 }
 
 pub(crate) fn build_causal_content(
@@ -1686,12 +2936,34 @@ pub(crate) fn build_causal_content(
     enriched: &EnrichedData,
 ) -> CausalCardContent {
     let frame = resolve_causal_frame_profile(card_type, input, enriched);
+    let semantic_mode = infer_semantic_mode(frame);
     let left_node_id = format!("{card_id}:left:0");
     let left_text = if input.trim().is_empty() {
         enriched.title.clone()
     } else {
         input.trim().to_string()
     };
+    let left_parts = summarize_node_parts(
+        &left_text,
+        Some(enriched.title.as_str()),
+        88,
+        4,
+    );
+    let left_headline = derive_node_headline(
+        Some(left_parts.title.as_str()),
+        Some(enriched.title.as_str()),
+        left_text.as_str(),
+        118,
+    );
+    let left_summary_line = derive_summary_line(
+        left_parts
+            .bullets
+            .first()
+            .map(|value| value.as_str())
+            .or_else(|| Some(left_text.as_str())),
+        left_headline.as_str(),
+        130,
+    );
     let left_entity = enriched
         .entities
         .as_ref()
@@ -1701,13 +2973,22 @@ pub(crate) fn build_causal_content(
     let left_nodes = vec![CausalNode {
         id: left_node_id.clone(),
         text: left_text,
+        headline: Some(left_headline.clone()),
+        summary_line: left_summary_line.clone(),
+        title: Some(left_parts.title),
+        bullets: (!left_parts.bullets.is_empty()).then_some(left_parts.bullets),
+        details: Some(input.trim().to_string()).filter(|value| !value.is_empty()),
         role: Some(infer_left_node_role(frame, card_type, input)),
+        rank: Some(1),
+        group_type: Some(CausalGroupType::Primary),
+        is_image_applicable: true,
         image: None,
         entity: left_entity,
         occurred_at: Some(occurred_at.to_string()),
     }];
 
     let mut right_nodes = collect_right_nodes(card_id, frame, enriched);
+    polish_semantic_nodes(&mut right_nodes, frame);
 
     if right_nodes.is_empty() {
         let fallback_text = enriched
@@ -1725,11 +3006,40 @@ pub(crate) fn build_causal_content(
                     .map(|value| value.to_string())
             })
             .unwrap_or_else(|| enriched.title.clone());
+        let fallback_parts = summarize_node_parts(
+            fallback_text.as_str(),
+            Some(enriched.title.as_str()),
+            100,
+            3,
+        );
+        let fallback_headline = derive_node_headline(
+            Some(fallback_parts.title.as_str()),
+            Some(enriched.title.as_str()),
+            fallback_text.as_str(),
+            118,
+        );
+        let fallback_summary = derive_summary_line(
+            fallback_parts
+                .bullets
+                .first()
+                .map(|value| value.as_str())
+                .or_else(|| Some(fallback_text.as_str())),
+            fallback_headline.as_str(),
+            130,
+        );
 
         right_nodes.push(CausalNode {
             id: format!("{card_id}:right:0"),
-            text: fallback_text,
+            text: fallback_text.clone(),
+            headline: Some(fallback_headline),
+            summary_line: fallback_summary,
+            title: Some(fallback_parts.title),
+            bullets: (!fallback_parts.bullets.is_empty()).then_some(fallback_parts.bullets),
+            details: Some(fallback_text).filter(|value| !value.trim().is_empty()),
             role: Some(infer_right_node_role(frame)),
+            rank: Some(1),
+            group_type: Some(CausalGroupType::Primary),
+            is_image_applicable: false,
             image: None,
             entity: None,
             occurred_at: None,
@@ -1740,6 +3050,7 @@ pub(crate) fn build_causal_content(
         if let Some(node) = right_nodes.first_mut() {
             if node.image.is_none() {
                 node.image = Some(image);
+                node.is_image_applicable = true;
             }
         }
     }
@@ -1786,11 +3097,69 @@ pub(crate) fn build_causal_content(
         None
     };
 
+    let overflow_count = right_nodes
+        .len()
+        .checked_sub(DEFAULT_VISIBLE_RIGHT_COUNT)
+        .map(|count| count as u32)
+        .filter(|count| *count > 0);
+    let compaction = Some(CausalCompactionState {
+        enabled: overflow_count.is_some(),
+        threshold: DEFAULT_VISIBLE_RIGHT_COUNT as u32,
+        overflow_count,
+    });
+
     CausalCardContent {
         left_nodes,
         right_nodes,
         links,
         layout,
+        semantic_mode: Some(semantic_mode),
+        compaction,
+        transcript_source: Some(CausalTranscriptSource::Both),
+    }
+}
+
+fn build_primary_right_node(
+    id: String,
+    text: String,
+    title: Option<String>,
+    bullets: Option<Vec<String>>,
+    details: Option<String>,
+    role: CausalNodeRole,
+    rank: usize,
+) -> CausalNode {
+    let headline = derive_node_headline(
+        title.as_deref(),
+        None,
+        text.as_str(),
+        120,
+    );
+    let summary_line = derive_summary_line(
+        bullets
+            .as_ref()
+            .and_then(|items| items.first())
+            .map(|value| value.as_str())
+            .or_else(|| details.as_deref())
+            .or_else(|| Some(text.as_str())),
+        headline.as_str(),
+        128,
+    );
+
+    CausalNode {
+        id,
+        text,
+        headline: Some(headline),
+        summary_line,
+        title,
+        bullets,
+        details,
+        role: Some(role),
+        rank: Some((rank + 1) as u32),
+        group_type: Some(CausalGroupType::Primary),
+        is_image_applicable: false,
+        image: None,
+        entity: None,
+        occurred_at: None,
     }
 }
 
@@ -1813,31 +3182,37 @@ fn collect_right_nodes(
 
             if title.eq_ignore_ascii_case("completed orders") {
                 for row in extract_markdown_table_rows(body) {
-                    right_nodes.push(CausalNode {
-                        id: format!("{card_id}:right:{index}"),
-                        text: row,
-                        role: Some(CausalNodeRole::Reward),
-                        image: None,
-                        entity: None,
-                        occurred_at: None,
-                    });
+                    let parts = summarize_node_parts(row.as_str(), Some("Delivery outcome"), 100, 3);
+                    right_nodes.push(build_primary_right_node(
+                        format!("{card_id}:right:{index}"),
+                        row,
+                        Some(parts.title),
+                        (!parts.bullets.is_empty()).then_some(parts.bullets),
+                        Some(body.to_string()).filter(|value| !value.trim().is_empty()),
+                        CausalNodeRole::Reward,
+                        index,
+                    ));
                     index += 1;
                 }
                 continue;
             }
 
-            if frame == CausalFrameProfile::ClaimResponse {
-                let heading_nodes = extract_markdown_heading_nodes(body);
-                if !heading_nodes.is_empty() {
-                    for heading in heading_nodes {
-                        right_nodes.push(CausalNode {
-                            id: format!("{card_id}:right:{index}"),
-                            text: heading,
-                            role: Some(role.clone()),
-                            image: None,
-                            entity: None,
-                            occurred_at: None,
-                        });
+            if matches!(
+                frame,
+                CausalFrameProfile::StatementWhy | CausalFrameProfile::QuestionResponse
+            ) {
+                let grouped_nodes = extract_claim_response_node_groups(body);
+                if !grouped_nodes.is_empty() {
+                    for group in grouped_nodes {
+                        right_nodes.push(build_primary_right_node(
+                            format!("{card_id}:right:{index}"),
+                            group.text,
+                            Some(group.title),
+                            (!group.bullets.is_empty()).then_some(group.bullets),
+                            group.details,
+                            role.clone(),
+                            index,
+                        ));
                         index += 1;
                     }
                     continue;
@@ -1846,14 +3221,16 @@ fn collect_right_nodes(
                 let emphasized_nodes = extract_emphasized_claim_lines(body);
                 if !emphasized_nodes.is_empty() {
                     for item in emphasized_nodes {
-                        right_nodes.push(CausalNode {
-                            id: format!("{card_id}:right:{index}"),
-                            text: item,
-                            role: Some(role.clone()),
-                            image: None,
-                            entity: None,
-                            occurred_at: None,
-                        });
+                        let parts = summarize_node_parts(item.as_str(), Some(title), 108, 3);
+                        right_nodes.push(build_primary_right_node(
+                            format!("{card_id}:right:{index}"),
+                            item.clone(),
+                            Some(parts.title),
+                            (!parts.bullets.is_empty()).then_some(parts.bullets),
+                            Some(item).filter(|value| !value.trim().is_empty()),
+                            role.clone(),
+                            index,
+                        ));
                         index += 1;
                     }
                     continue;
@@ -1862,18 +3239,22 @@ fn collect_right_nodes(
                 let bullet_items = extract_bullet_lines(body);
                 if bullet_items.len() > 1 {
                     for item in bullet_items {
-                        right_nodes.push(CausalNode {
-                            id: format!("{card_id}:right:{index}"),
-                            text: if title.is_empty() {
-                                item
-                            } else {
-                                format!("{title}: {item}")
-                            },
-                            role: Some(role.clone()),
-                            image: None,
-                            entity: None,
-                            occurred_at: None,
-                        });
+                        let combined_text = if title.is_empty() {
+                            item.clone()
+                        } else {
+                            format!("{title}: {item}")
+                        };
+                        let parts =
+                            summarize_node_parts(combined_text.as_str(), Some(title), 108, 3);
+                        right_nodes.push(build_primary_right_node(
+                            format!("{card_id}:right:{index}"),
+                            combined_text,
+                            Some(parts.title),
+                            (!parts.bullets.is_empty()).then_some(parts.bullets),
+                            Some(body.to_string()).filter(|value| !value.trim().is_empty()),
+                            role.clone(),
+                            index,
+                        ));
                         index += 1;
                     }
                     continue;
@@ -1885,23 +3266,27 @@ fn collect_right_nodes(
                 let include_title_prefix = !title.is_empty()
                     && !title.eq_ignore_ascii_case("codex response")
                     && !title.eq_ignore_ascii_case("response");
-                right_nodes.push(CausalNode {
-                    id: format!("{card_id}:right:{index}"),
-                    text: if include_title_prefix {
-                        format!("{title}: {summary}")
-                    } else {
-                        summary
-                    },
-                    role: Some(role.clone()),
-                    image: None,
-                    entity: None,
-                    occurred_at: None,
-                });
+                let text = if include_title_prefix {
+                    format!("{title}: {summary}")
+                } else {
+                    summary
+                };
+                let parts = summarize_node_parts(text.as_str(), Some(title), 108, 3);
+                right_nodes.push(build_primary_right_node(
+                    format!("{card_id}:right:{index}"),
+                    text.clone(),
+                    Some(parts.title),
+                    (!parts.bullets.is_empty()).then_some(parts.bullets),
+                    Some(text).filter(|value| !value.trim().is_empty()),
+                    role.clone(),
+                    index,
+                ));
                 index += 1;
             }
         }
     }
 
+    normalize_causal_node_titles(&mut right_nodes);
     right_nodes
 }
 
@@ -1912,7 +3297,8 @@ fn infer_left_node_role(
 ) -> CausalNodeRole {
     match frame {
         CausalFrameProfile::ActionReward => CausalNodeRole::Action,
-        CausalFrameProfile::ClaimResponse => {
+        CausalFrameProfile::QuestionResponse => CausalNodeRole::Question,
+        CausalFrameProfile::StatementWhy => {
             if matches!(card_type, CardType::Query) || input.trim().contains('?') {
                 CausalNodeRole::Question
             } else {
@@ -1926,12 +3312,14 @@ fn infer_left_node_role(
 fn infer_right_node_role(frame: CausalFrameProfile) -> CausalNodeRole {
     match frame {
         CausalFrameProfile::ActionReward => CausalNodeRole::Reward,
-        CausalFrameProfile::ClaimResponse => CausalNodeRole::Response,
+        CausalFrameProfile::StatementWhy | CausalFrameProfile::QuestionResponse => {
+            CausalNodeRole::Response
+        }
         CausalFrameProfile::CauseEffect => CausalNodeRole::Effect,
     }
 }
 
-fn looks_like_claim_or_question_input(input: &str) -> bool {
+fn looks_like_question_input(input: &str) -> bool {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return false;
@@ -1942,17 +3330,34 @@ fn looks_like_claim_or_question_input(input: &str) -> bool {
 
     let lower = trimmed.to_lowercase();
     [
-        "i think",
-        "i feel",
-        "i believe",
-        "favorite",
-        "should",
         "why",
         "how",
         "what if",
         "would it",
         "could it",
         "do you think",
+        "should i",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn looks_like_statement_or_claim_input(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_lowercase();
+    [
+        "i think",
+        "i feel",
+        "i believe",
+        "favorite",
+        "should",
+        "love",
+        "hate",
+        "best",
     ]
     .iter()
     .any(|marker| lower.contains(marker))
@@ -1973,29 +3378,617 @@ fn expanded_contains_markdown_headings(enriched: &EnrichedData) -> bool {
         .unwrap_or(false)
 }
 
-fn extract_markdown_heading_nodes(body: &str) -> Vec<String> {
-    let mut headings = Vec::new();
+#[derive(Debug, Clone)]
+struct ParsedNodeParts {
+    title: String,
+    bullets: Vec<String>,
+}
 
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with('#') {
-            continue;
-        }
+#[derive(Debug, Clone)]
+struct ClaimResponseNodeGroup {
+    title: String,
+    bullets: Vec<String>,
+    text: String,
+    details: Option<String>,
+}
 
-        let heading_text = trimmed.trim_start_matches('#').trim();
-        if heading_text.is_empty() {
-            continue;
-        }
+fn semantic_right_fallback(frame: CausalFrameProfile) -> &'static str {
+    match frame {
+        CausalFrameProfile::CauseEffect => "Effect",
+        CausalFrameProfile::ActionReward => "Outcome",
+        CausalFrameProfile::StatementWhy => "Why it matters",
+        CausalFrameProfile::QuestionResponse => "Answer",
+    }
+}
 
-        let cleaned = heading_text.trim_matches('*').trim_matches('_').trim();
-        if cleaned.is_empty() {
-            continue;
-        }
+fn semantic_headline_key(value: &str) -> String {
+    value
+        .to_lowercase()
+        .replace(['’', '\''], "")
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch.is_whitespace() {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
-        headings.push(truncate_summary(cleaned, 140));
+fn is_generic_node_title(value: &str) -> bool {
+    let normalized = semantic_headline_key(value);
+    matches!(
+        normalized.as_str(),
+        "response"
+            | "cause"
+            | "effect"
+            | "action"
+            | "reward"
+            | "question"
+            | "thought"
+            | "note"
+            | "codex response"
+            | "details"
+    )
+}
+
+fn is_weak_semantic_fragment(value: &str) -> bool {
+    let normalized = semantic_headline_key(value);
+    if normalized.is_empty() {
+        return true;
+    }
+    let word_count = normalized.split_whitespace().count();
+    if word_count < 3 {
+        return true;
+    }
+    normalized.ends_with(" if")
+        || normalized.ends_with(" if it")
+        || normalized.ends_with(" because")
+        || normalized.ends_with(" and")
+        || normalized.ends_with(" but")
+        || normalized.ends_with(" so")
+        || normalized.ends_with(" youd gain")
+        || normalized.ends_with(" you d gain")
+        || normalized.ends_with(" youd lose")
+        || normalized.ends_with(" you d lose")
+        || normalized.ends_with(" you gain")
+        || normalized.ends_with(" you lose")
+        || normalized.ends_with(" trade off")
+}
+
+fn is_meta_boilerplate_headline(value: &str) -> bool {
+    let normalized = semantic_headline_key(value);
+    if normalized.is_empty() {
+        return true;
     }
 
-    headings
+    [
+        "jmwillis",
+        "codex is responding",
+        "status online",
+        "next test idea",
+        "send something short",
+        "this week s criminal",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn rewrite_fragmentary_headline(title: &str, bullets: Option<&[String]>) -> String {
+    let mut base = title.trim().trim_end_matches(':').trim().to_string();
+    if base.is_empty() {
+        return base;
+    }
+
+    if is_weak_semantic_fragment(base.as_str()) {
+        if let Some(first_bullet) = bullets.and_then(|items| items.first()) {
+            let first_bullet = first_bullet.trim();
+            if !first_bullet.is_empty() {
+                base = format!("{base} — {first_bullet}");
+            }
+        } else {
+            let normalized = semantic_headline_key(base.as_str());
+            if normalized.ends_with("youd gain")
+                || normalized.ends_with("you d gain")
+                || normalized.ends_with("you gain")
+            {
+                base = format!("{base} — key gains");
+            } else if normalized.ends_with("youd lose")
+                || normalized.ends_with("you d lose")
+                || normalized.ends_with("you lose")
+            {
+                base = format!("{base} — key losses");
+            } else if normalized.ends_with("trade off") {
+                base = format!("{base} — tradeoff");
+            } else if !base.ends_with(" details") {
+                base = format!("{base} details");
+            }
+        }
+    }
+
+    normalize_title(base.as_str(), 120)
+}
+
+fn semantic_quality_score(headline: &str, summary: Option<&str>) -> i32 {
+    let mut score = 100;
+    let normalized_headline = semantic_headline_key(headline);
+    if normalized_headline.is_empty() {
+        score -= 70;
+    }
+    if is_weak_semantic_fragment(headline) {
+        score -= 35;
+    }
+    if is_meta_boilerplate_headline(headline) {
+        score -= 55;
+    }
+    if normalized_headline.split_whitespace().count() < 4 {
+        score -= 12;
+    }
+
+    if let Some(summary) = summary {
+        let normalized_summary = semantic_headline_key(summary);
+        if normalized_summary == normalized_headline {
+            score -= 20;
+        }
+    }
+
+    score
+}
+
+fn derive_node_headline(
+    preferred_title: Option<&str>,
+    fallback_title: Option<&str>,
+    source_text: &str,
+    limit: usize,
+) -> String {
+    let preferred = preferred_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| !is_generic_node_title(value))
+        .map(|value| normalize_title(value, limit));
+    if let Some(value) = preferred {
+        if !is_weak_semantic_fragment(value.as_str()) {
+            return value;
+        }
+    }
+
+    let sentence = first_sentence(source_text)
+        .map(|value| normalize_title(value.as_str(), limit))
+        .filter(|value| !value.is_empty())
+        .filter(|value| !is_generic_node_title(value.as_str()));
+    if let Some(value) = sentence {
+        if !is_weak_semantic_fragment(value.as_str()) {
+            return value;
+        }
+    }
+
+    fallback_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| normalize_title(value, limit))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| normalize_title(source_text, limit))
+}
+
+fn derive_summary_line(source: Option<&str>, headline: &str, limit: usize) -> Option<String> {
+    let source = source.map(str::trim).filter(|value| !value.is_empty())?;
+    let normalized_headline = semantic_headline_key(headline);
+    let mut candidate = first_sentence(source)
+        .unwrap_or_else(|| source.to_string())
+        .replace('\n', " ")
+        .trim()
+        .to_string();
+    if candidate.is_empty() {
+        return None;
+    }
+    candidate = truncate_summary(candidate.as_str(), limit);
+    let normalized_candidate = semantic_headline_key(candidate.as_str());
+    if normalized_candidate.is_empty() || normalized_candidate == normalized_headline {
+        return None;
+    }
+    if normalized_candidate.starts_with(normalized_headline.as_str())
+        || normalized_headline.starts_with(normalized_candidate.as_str())
+    {
+        return None;
+    }
+    Some(candidate)
+}
+
+fn polish_semantic_nodes(nodes: &mut Vec<CausalNode>, frame: CausalFrameProfile) {
+    if nodes.is_empty() {
+        return;
+    }
+
+    let original_nodes = nodes.clone();
+    let mut seen = HashSet::new();
+    let fallback = semantic_right_fallback(frame).to_string();
+    let mut polished = Vec::new();
+    let mut low_quality_detected = false;
+
+    for (index, mut node) in nodes.drain(..).enumerate() {
+        let preferred_title = node
+            .headline
+            .as_deref()
+            .or(node.title.as_deref())
+            .filter(|value| !value.trim().is_empty());
+        let headline = derive_node_headline(
+            preferred_title,
+            Some(fallback.as_str()),
+            node.text.as_str(),
+            120,
+        );
+
+        // one regenerate pass for weak or fragmentary nodes
+        let regenerated_headline = if is_weak_semantic_fragment(headline.as_str()) {
+            derive_node_headline(
+                first_sentence(node.details.as_deref().unwrap_or(node.text.as_str())).as_deref(),
+                Some(fallback.as_str()),
+                node.details.as_deref().unwrap_or(node.text.as_str()),
+                120,
+            )
+        } else {
+            headline
+        };
+
+        let rescued_headline = rewrite_fragmentary_headline(
+            regenerated_headline.as_str(),
+            node.bullets.as_deref(),
+        );
+
+        if is_weak_semantic_fragment(rescued_headline.as_str()) {
+            low_quality_detected = true;
+            continue;
+        }
+
+        if is_meta_boilerplate_headline(rescued_headline.as_str()) {
+            low_quality_detected = true;
+            continue;
+        }
+
+        let summary_line = derive_summary_line(
+            node.summary_line
+                .as_deref()
+                .or_else(|| {
+                    node.bullets
+                        .as_ref()
+                        .and_then(|items| items.first())
+                        .map(|value| value.as_str())
+                })
+                .or_else(|| node.details.as_deref())
+                .or_else(|| Some(node.text.as_str())),
+            rescued_headline.as_str(),
+            128,
+        );
+
+        let quality = semantic_quality_score(
+            rescued_headline.as_str(),
+            summary_line.as_deref(),
+        );
+        if quality < 58 {
+            low_quality_detected = true;
+            continue;
+        }
+
+        let dedupe_key = format!(
+            "{}|{}",
+            semantic_headline_key(rescued_headline.as_str()),
+            semantic_headline_key(summary_line.as_deref().unwrap_or(""))
+        );
+        if dedupe_key.trim_matches('|').is_empty() {
+            low_quality_detected = true;
+            continue;
+        }
+        if !seen.insert(dedupe_key) {
+            continue;
+        }
+
+        node.headline = Some(rescued_headline);
+        node.summary_line = summary_line;
+        node.rank = Some((index + 1) as u32);
+        node.group_type = Some(CausalGroupType::Primary);
+        node.is_image_applicable = false;
+        polished.push(node);
+    }
+
+    let should_attempt_rescue = matches!(
+        frame,
+        CausalFrameProfile::StatementWhy | CausalFrameProfile::QuestionResponse
+    ) && (low_quality_detected || polished.len() < std::cmp::min(3, original_nodes.len()));
+
+    if should_attempt_rescue {
+        polished = rescue_low_quality_semantic_nodes(&original_nodes, frame, fallback.as_str());
+    }
+
+    if polished.is_empty() {
+        if let Some(mut fallback_node) = original_nodes.first().cloned() {
+            let fallback_headline = derive_node_headline(
+                fallback_node.title.as_deref(),
+                Some(fallback.as_str()),
+                fallback_node.text.as_str(),
+                120,
+            );
+            fallback_node.headline = Some(fallback_headline.clone());
+            fallback_node.summary_line = derive_summary_line(
+                fallback_node.details.as_deref().or(Some(fallback_node.text.as_str())),
+                fallback_headline.as_str(),
+                128,
+            );
+            fallback_node.rank = Some(1);
+            fallback_node.group_type = Some(CausalGroupType::Primary);
+            fallback_node.is_image_applicable = false;
+            polished.push(fallback_node);
+        }
+    }
+
+    *nodes = polished;
+}
+
+fn rescue_low_quality_semantic_nodes(
+    original_nodes: &[CausalNode],
+    frame: CausalFrameProfile,
+    fallback: &str,
+) -> Vec<CausalNode> {
+    let mut rescued = Vec::new();
+    let mut seen = HashSet::new();
+
+    for (index, original) in original_nodes.iter().enumerate() {
+        let details_source = original
+            .details
+            .as_deref()
+            .unwrap_or(original.text.as_str());
+        let detail_sentence = first_sentence(details_source);
+        let preferred = original
+            .title
+            .as_deref()
+            .or(original.headline.as_deref())
+            .or(detail_sentence.as_deref())
+            .unwrap_or(fallback);
+
+        let rescued_headline = rewrite_fragmentary_headline(
+            preferred,
+            original.bullets.as_deref(),
+        );
+        if rescued_headline.is_empty()
+            || is_weak_semantic_fragment(rescued_headline.as_str())
+            || is_meta_boilerplate_headline(rescued_headline.as_str())
+        {
+            continue;
+        }
+
+        let summary_sentence = first_sentence(details_source);
+        let summary_line = derive_summary_line(
+            original
+                .bullets
+                .as_ref()
+                .and_then(|items| items.get(1).map(String::as_str))
+                .or(original.summary_line.as_deref())
+                .or(summary_sentence.as_deref())
+                .or(Some(details_source)),
+            rescued_headline.as_str(),
+            128,
+        );
+
+        let dedupe_key = format!(
+            "{}|{}",
+            semantic_headline_key(rescued_headline.as_str()),
+            semantic_headline_key(summary_line.as_deref().unwrap_or("")),
+        );
+        if dedupe_key.trim_matches('|').is_empty() || !seen.insert(dedupe_key) {
+            continue;
+        }
+
+        let mut node = original.clone();
+        node.headline = Some(rescued_headline);
+        node.summary_line = summary_line;
+        node.rank = Some((index + 1) as u32);
+        node.group_type = Some(CausalGroupType::Primary);
+        node.is_image_applicable = false;
+        rescued.push(node);
+    }
+
+    if rescued.is_empty() {
+        return Vec::new();
+    }
+
+    if matches!(frame, CausalFrameProfile::QuestionResponse) && rescued.len() > 5 {
+        rescued.truncate(5);
+    }
+
+    rescued
+}
+
+fn summarize_node_parts(
+    text: &str,
+    fallback_title: Option<&str>,
+    title_limit: usize,
+    bullet_limit: usize,
+) -> ParsedNodeParts {
+    let trimmed = text.trim();
+    let mut bullets = extract_bullet_lines(trimmed);
+    if bullets.is_empty() {
+        bullets = split_into_claim_bullets(trimmed, bullet_limit);
+    } else if bullets.len() > bullet_limit {
+        bullets.truncate(bullet_limit);
+    }
+
+    let fallback = fallback_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Details");
+    let mut title = first_sentence(trimmed)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| fallback.to_string());
+    title = normalize_title(title.as_str(), title_limit);
+
+    ParsedNodeParts { title, bullets }
+}
+
+fn extract_claim_response_node_groups(body: &str) -> Vec<ClaimResponseNodeGroup> {
+    let mut groups: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    let mut current_heading: Option<String> = None;
+    let mut current_lines: Vec<String> = Vec::new();
+
+    let push_current = |groups: &mut Vec<(Option<String>, Vec<String>)>,
+                        current_heading: &mut Option<String>,
+                        current_lines: &mut Vec<String>| {
+        if current_heading.is_none() && current_lines.is_empty() {
+            return;
+        }
+        groups.push((current_heading.take(), std::mem::take(current_lines)));
+    };
+
+    for raw_line in body.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed == "---" {
+            push_current(&mut groups, &mut current_heading, &mut current_lines);
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            push_current(&mut groups, &mut current_heading, &mut current_lines);
+            let heading = trimmed
+                .trim_start_matches('#')
+                .trim()
+                .trim_matches('*')
+                .trim_matches('_')
+                .trim()
+                .to_string();
+            if !heading.is_empty() {
+                current_heading = Some(heading);
+            }
+            continue;
+        }
+        current_lines.push(trimmed.to_string());
+    }
+    push_current(&mut groups, &mut current_heading, &mut current_lines);
+
+    let has_headings = groups.iter().any(|(heading, _)| heading.is_some());
+    if has_headings {
+        let mut preface_lines: Vec<String> = Vec::new();
+        let mut normalized_groups: Vec<(Option<String>, Vec<String>)> = Vec::new();
+
+        for (heading, lines) in groups {
+            if heading.is_none() {
+                preface_lines.extend(lines);
+                continue;
+            }
+            normalized_groups.push((heading, lines));
+        }
+
+        if !preface_lines.is_empty() {
+            if let Some((_, first_lines)) = normalized_groups.first_mut() {
+                let mut combined = preface_lines;
+                combined.extend(first_lines.clone());
+                *first_lines = combined;
+            }
+        }
+
+        groups = normalized_groups;
+    }
+
+    let mut output = Vec::new();
+    for (heading, lines) in groups {
+        let details = lines.join("\n");
+        let line_text = lines.join(" ");
+        let summary_source = if line_text.is_empty() {
+            heading.clone().unwrap_or_default()
+        } else {
+            line_text.clone()
+        };
+        if summary_source.trim().is_empty() {
+            continue;
+        }
+
+        let bullets = {
+            let explicit = extract_bullet_lines(details.as_str());
+            if explicit.is_empty() {
+                split_into_claim_bullets(summary_source.as_str(), 4)
+            } else {
+                explicit.into_iter().take(4).collect::<Vec<_>>()
+            }
+        };
+
+        let title_seed = heading
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| first_sentence(summary_source.as_str()).unwrap_or_default());
+        let title = normalize_title(title_seed.as_str(), 112);
+        if title.is_empty() {
+            continue;
+        }
+
+        let text = if bullets.is_empty() {
+            title.clone()
+        } else {
+            format!("{} — {}", title, bullets[0])
+        };
+        output.push(ClaimResponseNodeGroup {
+            title,
+            bullets,
+            text,
+            details: Some(details).filter(|value| !value.trim().is_empty()),
+        });
+    }
+
+    output
+}
+
+fn normalize_causal_node_titles(nodes: &mut [CausalNode]) {
+    for index in 0..nodes.len() {
+        let Some(title) = nodes[index].title.clone() else {
+            continue;
+        };
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let ends_with_fragment = trimmed.ends_with(':') || trimmed.ends_with(',');
+        let too_short = trimmed
+            .split_whitespace()
+            .filter(|word| !word.trim().is_empty())
+            .count()
+            < 4;
+        if !(ends_with_fragment || too_short) {
+            continue;
+        }
+
+        let mut supplemental: Option<String> = None;
+        if let Some(bullets) = nodes[index].bullets.as_mut() {
+            if let Some(first_bullet) = bullets.first().cloned() {
+                supplemental = Some(first_bullet.clone());
+                bullets.remove(0);
+            }
+        }
+        if supplemental.is_none() {
+            supplemental = nodes
+                .get(index + 1)
+                .and_then(|next| next.title.clone())
+                .or_else(|| nodes.get(index + 1).map(|next| truncate_summary(next.text.as_str(), 70)));
+        }
+
+        if let Some(extra) = supplemental {
+            let merged = format!(
+                "{} {}",
+                trimmed.trim_end_matches(':').trim_end_matches(',').trim(),
+                extra.trim()
+            );
+            nodes[index].title = Some(normalize_title(merged.as_str(), 112));
+            if nodes[index]
+                .text
+                .trim()
+                .eq_ignore_ascii_case(trimmed)
+            {
+                nodes[index].text = merged;
+            }
+        }
+    }
 }
 
 fn extract_emphasized_claim_lines(body: &str) -> Vec<String> {
@@ -2133,6 +4126,83 @@ fn extract_bullet_lines(body: &str) -> Vec<String> {
     bullets
 }
 
+fn split_into_claim_bullets(text: &str, max: usize) -> Vec<String> {
+    if max == 0 {
+        return Vec::new();
+    }
+    let mut bullets = Vec::new();
+
+    for segment in text
+        .split('\n')
+        .flat_map(|line| line.split(" — "))
+        .flat_map(|line| line.split(" - "))
+        .flat_map(|line| line.split("; "))
+        .flat_map(|line| line.split(". "))
+    {
+        let cleaned = segment
+            .trim()
+            .trim_start_matches('-')
+            .trim_start_matches('*')
+            .trim();
+        if cleaned.len() < 8 {
+            continue;
+        }
+        let normalized = truncate_summary(cleaned, 140);
+        if normalized.is_empty() {
+            continue;
+        }
+        if bullets.iter().any(|existing| existing == &normalized) {
+            continue;
+        }
+        bullets.push(normalized);
+        if bullets.len() >= max {
+            break;
+        }
+    }
+
+    bullets
+}
+
+fn first_sentence(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let candidate = trimmed
+            .split_terminator(['.', '!', '?'])
+            .next()
+            .map(str::trim)
+            .unwrap_or(trimmed);
+        if candidate.is_empty() {
+            continue;
+        }
+        return Some(candidate.to_string());
+    }
+    None
+}
+
+fn normalize_title(value: &str, limit: usize) -> String {
+    let trimmed = value
+        .trim()
+        .trim_matches('*')
+        .trim_matches('_')
+        .trim_start_matches('#')
+        .trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut title = truncate_summary(trimmed, limit);
+    if title.ends_with(':') && title.len() > 1 {
+        title = title.trim_end_matches(':').trim().to_string();
+    }
+    if title.ends_with(',') && title.len() > 1 {
+        title = title.trim_end_matches(',').trim().to_string();
+    }
+    title
+}
+
 pub(crate) fn apply_restructure_action(
     card_id: &str,
     causal: &CausalCardContent,
@@ -2159,7 +4229,32 @@ pub(crate) fn apply_restructure_action(
         }
     }
 
+    refresh_node_ranks(&mut next);
     next
+}
+
+fn refresh_node_ranks(causal: &mut CausalCardContent) {
+    for (index, node) in causal.left_nodes.iter_mut().enumerate() {
+        node.rank = Some((index + 1) as u32);
+        if node.group_type.is_none() {
+            node.group_type = Some(CausalGroupType::Primary);
+        }
+    }
+    for (index, node) in causal.right_nodes.iter_mut().enumerate() {
+        node.rank = Some((index + 1) as u32);
+        if node.group_type.is_none() {
+            node.group_type = Some(CausalGroupType::Primary);
+        }
+    }
+    if let Some(compaction) = causal.compaction.as_mut() {
+        compaction.overflow_count = causal
+            .right_nodes
+            .len()
+            .checked_sub(compaction.threshold as usize)
+            .map(|count| count as u32)
+            .filter(|count| *count > 0);
+        compaction.enabled = compaction.overflow_count.is_some();
+    }
 }
 
 fn split_cause_nodes(card_id: &str, causal: &mut CausalCardContent, source_node_ids: &[String]) {
@@ -2189,10 +4284,34 @@ fn split_cause_nodes(card_id: &str, causal: &mut CausalCardContent, source_node_
         }
 
         for (segment_index, segment) in segments.iter().enumerate() {
+            let headline = derive_node_headline(
+                Some(segment.as_str()),
+                source.title.as_deref(),
+                segment.as_str(),
+                118,
+            );
             next_left_nodes.push(CausalNode {
                 id: format!("{card_id}:left:{segment_index}"),
                 text: segment.clone(),
+                headline: Some(headline.clone()),
+                summary_line: derive_summary_line(
+                    source
+                        .bullets
+                        .as_ref()
+                        .and_then(|items| items.get(segment_index))
+                        .map(|value| value.as_str())
+                        .or_else(|| Some(segment.as_str())),
+                    headline.as_str(),
+                    128,
+                ),
+                title: Some(normalize_title(segment.as_str(), 88)),
+                bullets: Some(split_into_claim_bullets(segment.as_str(), 3))
+                    .filter(|value| !value.is_empty()),
+                details: source.details.clone().or_else(|| Some(source.text.clone())),
                 role: source.role.clone(),
+                rank: Some((segment_index + 1) as u32),
+                group_type: Some(CausalGroupType::Primary),
+                is_image_applicable: source.is_image_applicable,
                 image: source.image.clone(),
                 entity: source.entity.clone(),
                 occurred_at: source.occurred_at.clone(),
@@ -2262,11 +4381,51 @@ fn merge_effect_nodes(card_id: &str, causal: &mut CausalCardContent, source_node
         first_node.text.trim(),
         second_node.text.trim()
     );
+    let merged_headline = derive_node_headline(
+        first_node
+            .headline
+            .as_deref()
+            .or(first_node.title.as_deref()),
+        Some("Merged response"),
+        merged_text.as_str(),
+        120,
+    );
 
     let merged_node = CausalNode {
         id: format!("{card_id}:right:merged"),
         text: truncate_summary(&merged_text, 260),
+        headline: Some(merged_headline.clone()),
+        summary_line: derive_summary_line(
+            first_node
+                .summary_line
+                .as_deref()
+                .or(second_node.summary_line.as_deref())
+                .or_else(|| first_node.details.as_deref())
+                .or_else(|| Some(merged_text.as_str())),
+            merged_headline.as_str(),
+            128,
+        ),
+        title: Some(normalize_title(first_node.title.as_deref().unwrap_or(first_node.text.as_str()), 108)),
+        bullets: {
+            let mut merged_bullets = Vec::new();
+            if let Some(first_bullets) = first_node.bullets.clone() {
+                merged_bullets.extend(first_bullets);
+            } else {
+                merged_bullets.extend(split_into_claim_bullets(first_node.text.as_str(), 2));
+            }
+            if let Some(second_bullets) = second_node.bullets.clone() {
+                merged_bullets.extend(second_bullets);
+            } else {
+                merged_bullets.extend(split_into_claim_bullets(second_node.text.as_str(), 2));
+            }
+            merged_bullets.truncate(4);
+            (!merged_bullets.is_empty()).then_some(merged_bullets)
+        },
+        details: Some(merged_text),
         role: first_node.role.clone().or(second_node.role.clone()),
+        rank: first_node.rank.or(second_node.rank).or(Some((first + 1) as u32)),
+        group_type: Some(CausalGroupType::Primary),
+        is_image_applicable: first_node.is_image_applicable || second_node.is_image_applicable,
         image: first_node.image.clone().or(second_node.image.clone()),
         entity: first_node.entity.clone().or(second_node.entity.clone()),
         occurred_at: first_node
@@ -2329,6 +4488,7 @@ fn reframe_causal_roles(causal: &mut CausalCardContent, target_mode: Option<&str
     });
 
     if desired.eq_ignore_ascii_case("cause_effect") {
+        causal.semantic_mode = Some(CausalSemanticMode::CauseEffect);
         for node in &mut causal.left_nodes {
             node.role = match node.role.clone() {
                 Some(CausalNodeRole::Action) => Some(CausalNodeRole::Cause),
@@ -2346,6 +4506,7 @@ fn reframe_causal_roles(causal: &mut CausalCardContent, target_mode: Option<&str
         return;
     }
 
+    causal.semantic_mode = Some(CausalSemanticMode::ActionReward);
     for node in &mut causal.left_nodes {
         node.role = match node.role.clone() {
             Some(CausalNodeRole::Cause) => Some(CausalNodeRole::Action),
@@ -2442,9 +4603,32 @@ fn is_image_ready(image: Option<&CardImage>) -> bool {
         .is_some_and(|value| value.status == ImageStatus::Ready && value.url.is_some())
 }
 
+fn auto_image_target_node_id(card: &StreamCard) -> Option<String> {
+    let causal = card.causal.as_ref()?;
+    if let Some(node) = causal.left_nodes.iter().find(|node| {
+        node.is_image_applicable
+            && !is_image_ready(node.image.as_ref())
+            && node.group_type != Some(CausalGroupType::OverflowSummary)
+    }) {
+        return Some(node.id.clone());
+    }
+
+    causal
+        .right_nodes
+        .iter()
+        .find(|node| {
+            node.is_image_applicable
+                && !is_image_ready(node.image.as_ref())
+                && node.group_type != Some(CausalGroupType::OverflowSummary)
+        })
+        .map(|node| node.id.clone())
+}
+
 fn entity_link_for(entity_type: &str, entity_name: &str) -> String {
     let folder = match entity_type {
         "media" => "Entities/Media",
+        "game" | "games" => "Entities/Media",
+        "book" | "books" => "Entities/Media",
         "food" => "Entities/Food",
         "delivery" => "Entities/Delivery",
         "fitness" => "Entities/Fitness",

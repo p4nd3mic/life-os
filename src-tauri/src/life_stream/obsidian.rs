@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use chrono::{Datelike, NaiveDate, NaiveDateTime};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
 use tokio::fs;
 
 use super::service::EnrichedData;
@@ -78,6 +78,48 @@ impl ObsidianIO {
         };
 
         let updated = append_card_entry(&content, date, card_id, occurred_at, enriched);
+        fs::write(&stream_file, updated)
+            .await
+            .map_err(|err| LifeStreamError::Io(format!("Failed to write stream file: {err}")))?;
+
+        Ok(())
+    }
+
+    pub async fn write_note_semantic_payload(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        card_id: &str,
+        occurred_at: &str,
+        causal: &CausalCardContent,
+    ) -> Result<(), LifeStreamError> {
+        let root = self.resolve_root(workspace_path, obsidian_root)?;
+        let date_time = parse_occurred_at(occurred_at)?;
+        let date = date_time.date();
+        let stream_file = stream_file_path(&root, date.year(), date.month());
+        let stream_file = validate_path_within_vault(&root, &stream_file)?;
+        if !stream_file.exists() {
+            return Err(LifeStreamError::Parse(format!(
+                "Stream file does not exist for semantic persistence: {}",
+                stream_file.display()
+            )));
+        }
+
+        let content = fs::read_to_string(&stream_file)
+            .await
+            .map_err(|err| LifeStreamError::Io(format!("Failed to read stream file: {err}")))?;
+
+        let task_id = task_id_for_card(card_id, occurred_at, &date_time);
+        let semantic_json = serde_json::to_string(causal).map_err(|err| {
+            LifeStreamError::Parse(format!("Failed to encode semantic payload: {err}"))
+        })?;
+        let semantic_b64 = BASE64_STANDARD.encode(semantic_json.as_bytes());
+        let (updated, changed) =
+            upsert_note_payload_comment(&content, &task_id, "semantic_b64", &semantic_b64)?;
+        if !changed {
+            return Ok(());
+        }
+
         fs::write(&stream_file, updated)
             .await
             .map_err(|err| LifeStreamError::Io(format!("Failed to write stream file: {err}")))?;
@@ -238,6 +280,95 @@ fn append_card_entry(
     output.join("\n") + "\n"
 }
 
+fn parse_occurred_at(value: &str) -> Result<NaiveDateTime, LifeStreamError> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|parsed| parsed.naive_local())
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%z"))
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f%z"))
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S"))
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f"))
+        .map_err(|err| LifeStreamError::Parse(format!("Invalid timestamp {value}: {err}")))
+}
+
+fn looks_like_task_id(card_id: &str) -> bool {
+    let bytes = card_id.as_bytes();
+    if bytes.len() < 18 {
+        return false;
+    }
+    bytes.get(4) == Some(&b'-')
+        && bytes.get(7) == Some(&b'-')
+        && bytes.get(10) == Some(&b'-')
+        && bytes.get(15) == Some(&b'-')
+}
+
+fn task_id_for_card(card_id: &str, occurred_at_raw: &str, occurred_at: &NaiveDateTime) -> String {
+    if looks_like_task_id(card_id) {
+        return card_id.to_string();
+    }
+    let compact_time = occurred_at_raw
+        .get(11..16)
+        .map(|value| value.replace(':', ""))
+        .filter(|value| value.len() == 4)
+        .unwrap_or_else(|| format!("{:02}{:02}", occurred_at.time().hour(), occurred_at.time().minute()));
+    format!(
+        "{}-{}-{}",
+        occurred_at.date().format("%Y-%m-%d"),
+        compact_time,
+        card_id
+    )
+}
+
+fn upsert_note_payload_comment(
+    content: &str,
+    note_id: &str,
+    key: &str,
+    value: &str,
+) -> Result<(String, bool), LifeStreamError> {
+    let mut lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+    let marker = format!("<!--note:{note_id}-->");
+    let marker_index = lines
+        .iter()
+        .position(|line| line.trim() == marker)
+        .ok_or_else(|| LifeStreamError::Parse(format!("note marker not found: {note_id}")))?;
+
+    let payload_start = marker_index + 1;
+    let mut payload_end = lines.len();
+    let mut index = payload_start;
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
+        if trimmed.starts_with("<!--note:") || trimmed.starts_with("## ") {
+            payload_end = index;
+            break;
+        }
+        index += 1;
+    }
+
+    let new_line = format!("<!--{key}:{value}-->");
+    let mut changed = false;
+    let mut replacement_index: Option<usize> = None;
+    for line_index in payload_start..payload_end {
+        if let Some((existing_key, existing_value)) =
+            parse_comment_key_value(lines[line_index].trim())
+        {
+            if existing_key == key {
+                replacement_index = Some(line_index);
+                if existing_value != value {
+                    lines[line_index] = new_line.clone();
+                    changed = true;
+                }
+                break;
+            }
+        }
+    }
+
+    if replacement_index.is_none() {
+        lines.insert(payload_start, new_line);
+        changed = true;
+    }
+
+    Ok((lines.join("\n") + "\n", changed))
+}
+
 fn parse_cards_from_stream(content: &str, date: NaiveDate, stream_file: &Path) -> Vec<StreamCard> {
     let lines: Vec<&str> = content.lines().collect();
     let mut entries = Vec::new();
@@ -301,7 +432,10 @@ fn parse_cards_from_stream(content: &str, date: NaiveDate, stream_file: &Path) -
                 entity_links: None,
                 actions: Vec::new(),
             });
-            let causal = build_legacy_causal_content(&entry, &note);
+            let causal = note
+                .semantic
+                .clone()
+                .unwrap_or_else(|| build_legacy_causal_content(&entry, &note));
 
             StreamCard {
                 id: entry.task_id.clone(),
@@ -355,11 +489,29 @@ fn build_legacy_causal_content(entry: &ParsedEntry, note: &NotePayload) -> Causa
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string())
         .unwrap_or_else(|| entry.title.clone());
+    let left_title = infer_legacy_node_title(left_text.as_str(), entry.title.as_str());
+    let left_summary = note
+        .prompt
+        .as_deref()
+        .and_then(|value| first_sentence(value))
+        .filter(|value| !value.eq_ignore_ascii_case(left_title.as_str()));
 
     let left_nodes = vec![CausalNode {
         id: left_id.clone(),
         text: left_text,
+        headline: Some(left_title.clone()),
+        summary_line: left_summary,
+        title: Some(left_title),
+        bullets: note
+            .prompt
+            .as_deref()
+            .map(extract_legacy_bullets)
+            .filter(|items| !items.is_empty()),
+        details: note.prompt.clone(),
         role: Some(left_role),
+        rank: Some(1),
+        group_type: Some(super::types::CausalGroupType::Primary),
+        is_image_applicable: true,
         image: None,
         entity: None,
         occurred_at: Some(entry.occurred_at.clone()),
@@ -396,7 +548,15 @@ fn build_legacy_causal_content(entry: &ParsedEntry, note: &NotePayload) -> Causa
         .map(|(index, text)| CausalNode {
             id: format!("{}:right:{index}", entry.task_id),
             text: truncate_text(text, 220),
+            headline: Some(truncate_text(text, 118)),
+            summary_line: first_sentence(text),
+            title: Some(truncate_text(text, 110)),
+            bullets: Some(extract_legacy_bullets(text)).filter(|items| !items.is_empty()),
+            details: Some(text.to_string()).filter(|value| !value.trim().is_empty()),
             role: Some(right_role.clone()),
+            rank: Some((index + 1) as u32),
+            group_type: Some(super::types::CausalGroupType::Primary),
+            is_image_applicable: false,
             image: None,
             entity: None,
             occurred_at: None,
@@ -424,12 +584,23 @@ fn build_legacy_causal_content(entry: &ParsedEntry, note: &NotePayload) -> Causa
     } else {
         None
     };
+    let right_count = right_nodes.len();
 
     CausalCardContent {
         left_nodes,
         right_nodes,
         links,
         layout,
+        semantic_mode: Some(infer_legacy_semantic_mode(frame)),
+        compaction: Some(super::types::CausalCompactionState {
+            enabled: right_count > 3,
+            threshold: 3,
+            overflow_count: right_count
+                .checked_sub(3)
+                .map(|count| count as u32)
+                .filter(|count| *count > 0),
+        }),
+        transcript_source: Some(super::types::CausalTranscriptSource::Both),
     }
 }
 
@@ -438,6 +609,14 @@ enum LegacyFrameProfile {
     CauseEffect,
     ActionReward,
     ClaimResponse,
+}
+
+fn infer_legacy_semantic_mode(frame: LegacyFrameProfile) -> super::types::CausalSemanticMode {
+    match frame {
+        LegacyFrameProfile::CauseEffect => super::types::CausalSemanticMode::CauseEffect,
+        LegacyFrameProfile::ActionReward => super::types::CausalSemanticMode::ActionReward,
+        LegacyFrameProfile::ClaimResponse => super::types::CausalSemanticMode::StatementWhy,
+    }
 }
 
 fn infer_legacy_frame(note: &NotePayload) -> LegacyFrameProfile {
@@ -566,6 +745,68 @@ fn extract_legacy_headings(text: &str) -> Vec<String> {
     headings
 }
 
+fn extract_legacy_bullets(text: &str) -> Vec<String> {
+    let mut bullets = Vec::new();
+    for segment in text
+        .split('\n')
+        .flat_map(|line| line.split("; "))
+        .flat_map(|line| line.split(". "))
+    {
+        let cleaned = segment
+            .trim()
+            .trim_start_matches('-')
+            .trim_start_matches('*')
+            .trim();
+        if cleaned.len() < 8 {
+            continue;
+        }
+        bullets.push(truncate_text(cleaned, 140));
+        if bullets.len() >= 4 {
+            break;
+        }
+    }
+    bullets
+}
+
+fn first_sentence(text: &str) -> Option<String> {
+    text
+        .split('\n')
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .and_then(|line| line.split_terminator(['.', '!', '?']).next())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+}
+
+fn infer_legacy_node_title(left_text: &str, fallback_title: &str) -> String {
+    let fallback = fallback_title.trim();
+    let source = left_text.trim();
+
+    let first_sentence = first_sentence(source).unwrap_or_else(|| fallback.to_string());
+
+    let normalized = first_sentence
+        .to_lowercase()
+        .replace(|ch: char| !ch.is_alphanumeric() && !ch.is_whitespace(), " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let is_generic = matches!(
+        normalized.as_str(),
+        "response" | "cause" | "effect" | "action" | "reward" | "question"
+    );
+
+    if is_generic {
+        let first_bullet = extract_legacy_bullets(source)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| source.to_string());
+        return truncate_text(first_bullet.as_str(), 88);
+    }
+
+    truncate_text(first_sentence.as_str(), 88)
+}
+
 fn truncate_text(text: &str, max_chars: usize) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= max_chars {
@@ -576,12 +817,13 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     format!("{truncated}...")
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 struct NotePayload {
     prompt: Option<String>,
     response: Option<String>,
     body: Option<String>,
     duration_ms: Option<u64>,
+    semantic: Option<CausalCardContent>,
 }
 
 impl NotePayload {
@@ -623,6 +865,13 @@ fn parse_note_payload(lines: &[String]) -> NotePayload {
                 "prompt" => payload.prompt = Some(value.to_string()),
                 "response" => payload.response = Some(value.to_string()),
                 "duration_ms" => payload.duration_ms = value.parse::<u64>().ok(),
+                "semantic_b64" => {
+                    payload.semantic = decode_b64(value)
+                        .and_then(|decoded| serde_json::from_str::<CausalCardContent>(&decoded).ok())
+                }
+                "semantic" => {
+                    payload.semantic = serde_json::from_str::<CausalCardContent>(value).ok();
+                }
                 _ => {}
             }
             continue;
@@ -767,6 +1016,7 @@ pub(crate) fn normalize_time(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn parses_table_entries_with_note_payload_metadata() {
@@ -847,5 +1097,94 @@ Logged entry.
             .text
             .to_lowercase()
             .contains("tradeoff"));
+    }
+
+    #[test]
+    fn semantic_payload_preferred_when_present() {
+        let semantic = json!({
+            "leftNodes": [{
+                "id": "2026-02-02-2232-test:left:0",
+                "text": "Input",
+                "headline": "Custom statement title",
+                "title": "Custom statement title",
+                "role": "cause",
+                "rank": 1,
+                "groupType": "primary",
+                "isImageApplicable": true
+            }],
+            "rightNodes": [{
+                "id": "2026-02-02-2232-test:right:0",
+                "text": "Custom reason",
+                "headline": "Custom reason",
+                "title": "Custom reason",
+                "bullets": ["Point A", "Point B"],
+                "role": "response",
+                "rank": 1,
+                "groupType": "primary",
+                "isImageApplicable": false
+            }],
+            "links": [{
+                "id": "2026-02-02-2232-test:link:0",
+                "fromId": "2026-02-02-2232-test:left:0",
+                "toId": "2026-02-02-2232-test:right:0",
+                "strength": 1.0
+            }],
+            "semanticMode": "statement_why",
+            "compaction": {
+                "enabled": false,
+                "threshold": 3
+            },
+            "transcriptSource": "both"
+        });
+        let semantic_b64 = BASE64_STANDARD.encode(semantic.to_string());
+
+        let content = format!(
+            r#"
+# February 2026
+
+## Mon Feb 02
+| Plan | Actual | Delta |
+|------|--------|---|
+| -- | 22:32 Response | + | <!--task:2026-02-02-2232-test-->
+---
+<!--note:2026-02-02-2232-test-->
+<!--prompt:Input -->
+<!--semantic_b64:{}-->
+"#,
+            semantic_b64
+        );
+
+        let date = NaiveDate::from_ymd_opt(2026, 2, 2).expect("valid date");
+        let cards = parse_cards_from_stream(content.as_str(), date, Path::new("/vault/Stream/2026-02.md"));
+        assert_eq!(cards.len(), 1);
+        let causal = cards[0].causal.as_ref().expect("causal graph");
+        assert_eq!(causal.left_nodes[0].headline.as_deref(), Some("Custom statement title"));
+        assert_eq!(causal.right_nodes[0].headline.as_deref(), Some("Custom reason"));
+        assert_eq!(causal.right_nodes[0].bullets.as_ref().map(|value| value.len()), Some(2));
+    }
+
+    #[test]
+    fn upsert_note_payload_comment_replaces_existing_value() {
+        let content = r#"
+## Mon Feb 02
+| Plan | Actual | Delta |
+|------|--------|---|
+| -- | 22:32 Response | + | <!--task:2026-02-02-2232-test-->
+---
+<!--note:2026-02-02-2232-test-->
+<!--prompt:Input -->
+<!--semantic_b64:old-->
+Body line
+"#;
+        let (updated, changed) = upsert_note_payload_comment(
+            content,
+            "2026-02-02-2232-test",
+            "semantic_b64",
+            "new-value",
+        )
+        .expect("updated");
+        assert!(changed);
+        assert!(updated.contains("<!--semantic_b64:new-value-->"));
+        assert!(!updated.contains("<!--semantic_b64:old-->"));
     }
 }

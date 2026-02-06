@@ -267,6 +267,34 @@ echo "$TMDB_API_KEY"
 
 ---
 
+### Auto-fetch images doesn’t find expected local files
+
+Symptoms:
+- `🖼️ Fetch images (ask)` returns empty candidates
+- external library files exist but don’t show in picker
+
+Checks:
+1) Verify external roots exist and are accessible:
+```bash
+ls -la "/Volumes/YouTube 4TB/photos"
+ls -la "/Volumes/YouTube 4TB/Photos"
+```
+
+2) Confirm entity folder conventions match scanner expectations:
+- `Photos/Media/<Title>/...`
+- `Photos/Games/<Title>/...`
+- `Photos/Books/<Title>/...`
+
+3) If macOS prompts for external drive permission repeatedly:
+- approve once for the signed app build
+- avoid launching from unsigned/transient bundle paths between runs
+
+4) For auto-apply mode, verify entity isn’t unresolved `general:*`:
+- current guard skips generic entities in `auto_apply` to prevent bad catalog writes
+- use ask-first mode, pick candidate manually once, then auto-fetch will reuse canonical entity mapping
+
+---
+
 ## Data issues
 
 ### “Tool not found”

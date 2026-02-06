@@ -61,6 +61,85 @@
   }
 }
 
+.life-graph-card {
+  width: 100%;
+  max-width: none;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+}
+
+.life-graph-card__transcript {
+  margin-top: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(94, 234, 212, 0.26);
+  background: linear-gradient(
+    180deg,
+    rgba(8, 12, 20, 0.95) 0%,
+    rgba(8, 12, 20, 0.83) 100%
+  );
+  box-shadow:
+    0 0 0 1px rgba(94, 234, 212, 0.08),
+    0 10px 26px rgba(0, 0, 0, 0.34);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.life-graph-card__transcript-section {
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  background: rgba(2, 6, 16, 0.44);
+  border-radius: 10px;
+  padding: 10px 11px;
+}
+
+.life-graph-card__transcript-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(147, 197, 253, 0.95);
+  margin-bottom: 7px;
+}
+
+.life-graph-card__transcript-text {
+  font-size: 14px;
+  line-height: 1.5;
+  color: rgba(224, 236, 252, 0.98);
+  white-space: pre-wrap;
+}
+
+.life-graph-card__transcript-markdown {
+  font-size: 14px;
+  line-height: 1.5;
+  color: rgba(224, 236, 252, 0.98);
+}
+
+.life-graph-card__transcript-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.life-graph-card__transcript-item {
+  border-top: 1px dashed rgba(148, 163, 184, 0.28);
+  padding-top: 9px;
+}
+
+.life-graph-card__transcript-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.life-graph-card__transcript-item-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(191, 219, 254, 0.98);
+  margin-bottom: 6px;
+  letter-spacing: 0.03em;
+}
+
 .life-card-bubble__header {
   display: flex;
   align-items: center;
@@ -130,6 +209,14 @@
   color: var(--text-muted);
   cursor: pointer;
   font-size: 0.8rem;
+}
+
+.life-card-bubble__expanded-wrap {
+  margin-top: 6px;
+}
+
+.life-card-bubble__expanded-wrap.is-graph {
+  margin-top: 8px;
 }
 
 .life-card-bubble__image {

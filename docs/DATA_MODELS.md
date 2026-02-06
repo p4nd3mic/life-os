@@ -302,3 +302,43 @@ These are primarily for **fast lookup** and **render-time enrichment**.
 - [LIFE_STREAM.md](LIFE_STREAM.md)
 - [STATE_MANAGEMENT.md](STATE_MANAGEMENT.md)
 - [GOTCHAS.md](GOTCHAS.md)
+
+---
+
+## 2026-02 hardening additions
+
+### Image auto-fetch contracts (Rust + TS)
+
+Added shared types for auto-fetch orchestration:
+
+- `ImageAutoFetchMode`
+  - `review_first`
+  - `auto_apply`
+- `ImageAutoFetchSummary`
+  - `reviewed`
+  - `applied`
+  - `skipped`
+  - `failed`
+  - `errors`
+
+Files:
+
+- `src-tauri/src/life_stream/types.rs`
+- `src/features/life-stream/types.ts`
+
+### Causal image applicability contract
+
+`CausalNode.isImageApplicable` (existing field) is now actively used by:
+
+- right-lane UI noise suppression (no image CTA clutter by default)
+- auto-fetch target-node selection (prefer applicable/missing nodes)
+
+### Transcript source contract
+
+`CausalCardContent.transcriptSource` remains:
+
+- `expanded`
+- `raw_response`
+- `both`
+
+Graph transcript UI behavior assumes this mode when choosing full output/render order.

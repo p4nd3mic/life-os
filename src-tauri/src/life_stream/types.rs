@@ -149,6 +149,30 @@ pub struct ImageBackfillSummary {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageAutoFetchMode {
+    ReviewFirst,
+    AutoApply,
+}
+
+impl Default for ImageAutoFetchMode {
+    fn default() -> Self {
+        Self::ReviewFirst
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAutoFetchSummary {
+    pub reviewed: usize,
+    pub applied: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityRef {
     #[serde(rename = "type")]
@@ -217,7 +241,23 @@ pub struct CausalNode {
     pub id: String,
     pub text: String,
     #[serde(default)]
+    pub headline: Option<String>,
+    #[serde(default, rename = "summaryLine")]
+    pub summary_line: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub bullets: Option<Vec<String>>,
+    #[serde(default)]
+    pub details: Option<String>,
+    #[serde(default)]
     pub role: Option<CausalNodeRole>,
+    #[serde(default)]
+    pub rank: Option<u32>,
+    #[serde(default, rename = "groupType")]
+    pub group_type: Option<CausalGroupType>,
+    #[serde(default = "default_true", rename = "isImageApplicable")]
+    pub is_image_applicable: bool,
     #[serde(default)]
     pub image: Option<CardImage>,
     #[serde(default)]
@@ -252,6 +292,31 @@ pub struct CausalLayoutState {
     pub expanded: Option<bool>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CausalSemanticMode {
+    CauseEffect,
+    ActionReward,
+    StatementWhy,
+    QuestionResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CausalGroupType {
+    Primary,
+    OverflowSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CausalCompactionState {
+    pub enabled: bool,
+    pub threshold: u32,
+    #[serde(default, rename = "overflowCount")]
+    pub overflow_count: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CausalCardContent {
@@ -262,6 +327,24 @@ pub struct CausalCardContent {
     pub links: Vec<CausalLink>,
     #[serde(default)]
     pub layout: Option<CausalLayoutState>,
+    #[serde(default, rename = "semanticMode")]
+    pub semantic_mode: Option<CausalSemanticMode>,
+    #[serde(default)]
+    pub compaction: Option<CausalCompactionState>,
+    #[serde(default, rename = "transcriptSource")]
+    pub transcript_source: Option<CausalTranscriptSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CausalTranscriptSource {
+    Expanded,
+    RawResponse,
+    Both,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -432,6 +515,16 @@ pub enum CausalRestructureAction {
 pub struct CausalRestructureResult {
     pub patch: StreamCardPatch,
     pub version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticRegenerationResult {
+    pub updated: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    #[serde(default)]
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

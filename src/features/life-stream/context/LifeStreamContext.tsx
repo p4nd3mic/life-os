@@ -16,8 +16,11 @@ import type {
   CausalRestructureAction,
   DomainId,
   EntityRef,
+  ImageAutoFetchMode,
+  ImageAutoFetchSummary,
   ImageAttachResult,
   ImageCandidateResponse,
+  SemanticRegenerationResult,
   StreamCard,
   TaskDockFilter,
   TaskDockItem,
@@ -72,6 +75,20 @@ type LifeStreamContextValue = {
       updateEntityEmbed?: boolean;
     },
   ) => Promise<ImageAttachResult | null>;
+  semanticRegenerationStatus: {
+    state: "idle" | "running" | "done" | "error";
+    message?: string;
+  };
+  regenerateSemanticsForCurrentDate: () => Promise<SemanticRegenerationResult | null>;
+  clearSemanticRegenerationStatus: () => void;
+  imageAutoFetchStatus: {
+    state: "idle" | "running" | "done" | "error";
+    message?: string;
+  };
+  autoFetchImagesForCurrentDate: (
+    mode?: ImageAutoFetchMode,
+  ) => Promise<ImageAutoFetchSummary | null>;
+  clearImageAutoFetchStatus: () => void;
 
   taskDock: {
     items: TaskDockItem[];
@@ -116,8 +133,10 @@ export function LifeStreamProvider({
     retry,
     clarify,
     restructure,
+    regenerateSemantics,
     getImageCandidates,
     attachImage,
+    autoFetchImages,
     goToPreviousDay,
     goToNextDay,
     goToToday,
@@ -137,6 +156,16 @@ export function LifeStreamProvider({
       return new Set();
     }
   });
+  const [semanticRegenerationStatus, setSemanticRegenerationStatus] = useState<{
+    state: "idle" | "running" | "done" | "error";
+    message?: string;
+  }>({ state: "idle" });
+  const [imageAutoFetchStatus, setImageAutoFetchStatus] = useState<{
+    state: "idle" | "running" | "done" | "error";
+    message?: string;
+  }>({ state: "idle" });
+  const semanticStatusTimerRef = useRef<number | null>(null);
+  const imageAutoFetchStatusTimerRef = useRef<number | null>(null);
 
   const persistFilters = useCallback((next: Set<DomainId>) => {
     setActiveFilters(next);
@@ -173,6 +202,165 @@ export function LifeStreamProvider({
     activeFilters.size === 0
       ? cards
       : cards.filter((card) => activeFilters.has(card.domain));
+
+  const clearSemanticRegenerationStatus = useCallback(() => {
+    setSemanticRegenerationStatus({ state: "idle" });
+  }, []);
+
+  const scheduleSemanticStatusClear = useCallback((delayMs = 3200) => {
+    if (semanticStatusTimerRef.current) {
+      window.clearTimeout(semanticStatusTimerRef.current);
+    }
+    semanticStatusTimerRef.current = window.setTimeout(() => {
+      setSemanticRegenerationStatus({ state: "idle" });
+      semanticStatusTimerRef.current = null;
+    }, delayMs);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (semanticStatusTimerRef.current) {
+        window.clearTimeout(semanticStatusTimerRef.current);
+        semanticStatusTimerRef.current = null;
+      }
+      if (imageAutoFetchStatusTimerRef.current) {
+        window.clearTimeout(imageAutoFetchStatusTimerRef.current);
+        imageAutoFetchStatusTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const regenerateSemanticsForCurrentDate = useCallback(async () => {
+    if (!workspaceId) {
+      return null;
+    }
+    const cardIds = cards.map((card) => card.id);
+    if (cardIds.length === 0) {
+      setSemanticRegenerationStatus({
+        state: "done",
+        message: "🧠 Nothing to rebuild on this date.",
+      });
+      scheduleSemanticStatusClear();
+      return { updated: 0, skipped: 0, failed: 0, errors: [] };
+    }
+
+    setSemanticRegenerationStatus({
+      state: "running",
+      message: "🧠 LLM rewrite in progress…",
+    });
+
+    const result = await regenerateSemantics(cardIds, {
+      forceLlm: true,
+      persist: true,
+    });
+    if (!result) {
+      setSemanticRegenerationStatus({
+        state: "error",
+        message: "⚠️ Failed to regenerate semantics.",
+      });
+      scheduleSemanticStatusClear(4200);
+      return null;
+    }
+
+    if (result.failed > 0 && result.updated === 0) {
+      const firstError = result.errors[0];
+      const message = firstError
+        ? `⚠️ Rebuild failed (0 updated, ${result.failed} failed): ${firstError}`
+        : `⚠️ Rebuild failed (0 updated, ${result.failed} failed).`;
+      setSemanticRegenerationStatus({ state: "error", message });
+      scheduleSemanticStatusClear(5200);
+      return result;
+    }
+
+    if (result.failed > 0) {
+      const message = `🟡 Rebuilt ${result.updated} · failed ${result.failed}`;
+      setSemanticRegenerationStatus({ state: "done", message });
+      scheduleSemanticStatusClear(4200);
+      return result;
+    }
+
+    const message = `✅ Rebuilt ${result.updated}`;
+    setSemanticRegenerationStatus({ state: "done", message });
+    scheduleSemanticStatusClear(3200);
+    return result;
+  }, [cards, regenerateSemantics, scheduleSemanticStatusClear, workspaceId]);
+
+  const clearImageAutoFetchStatus = useCallback(() => {
+    setImageAutoFetchStatus({ state: "idle" });
+  }, []);
+
+  const scheduleImageAutoFetchStatusClear = useCallback((delayMs = 3600) => {
+    if (imageAutoFetchStatusTimerRef.current) {
+      window.clearTimeout(imageAutoFetchStatusTimerRef.current);
+    }
+    imageAutoFetchStatusTimerRef.current = window.setTimeout(() => {
+      setImageAutoFetchStatus({ state: "idle" });
+      imageAutoFetchStatusTimerRef.current = null;
+    }, delayMs);
+  }, []);
+
+  const autoFetchImagesForCurrentDate = useCallback(
+    async (mode: ImageAutoFetchMode = "review_first") => {
+      if (!workspaceId) {
+        return null;
+      }
+      const cardIds = cards.map((card) => card.id);
+      if (cardIds.length === 0) {
+        setImageAutoFetchStatus({
+          state: "done",
+          message: "🖼️ No cards to scan on this date.",
+        });
+        scheduleImageAutoFetchStatusClear();
+        return {
+          reviewed: 0,
+          applied: 0,
+          skipped: 0,
+          failed: 0,
+          errors: [],
+        };
+      }
+
+      setImageAutoFetchStatus({
+        state: "running",
+        message:
+          mode === "auto_apply"
+            ? "🖼️ Auto-applying top image candidates…"
+            : "🖼️ Fetching image candidates for review…",
+      });
+
+      const result = await autoFetchImages(cardIds, {
+        mode,
+        updateEntityFile: true,
+        updateEntityEmbed: false,
+      });
+      if (!result) {
+        setImageAutoFetchStatus({
+          state: "error",
+          message: "⚠️ Image auto-fetch failed.",
+        });
+        scheduleImageAutoFetchStatusClear(4600);
+        return null;
+      }
+
+      if (result.failed > 0) {
+        setImageAutoFetchStatus({
+          state: "error",
+          message: `⚠️ Images: ${result.applied} applied · ${result.reviewed} queued · ${result.failed} failed`,
+        });
+        scheduleImageAutoFetchStatusClear(5200);
+        return result;
+      }
+
+      const message =
+        mode === "auto_apply"
+          ? `✅ Applied ${result.applied} · skipped ${result.skipped}`
+          : `✅ Queued ${result.reviewed} review tasks · skipped ${result.skipped}`;
+      setImageAutoFetchStatus({ state: "done", message });
+      scheduleImageAutoFetchStatusClear();
+      return result;
+    },
+    [autoFetchImages, cards, scheduleImageAutoFetchStatusClear, workspaceId],
+  );
 
   const taskDock = useSyncExternalStore(
     (listener) => taskDockStore.subscribe(listener),
@@ -285,6 +473,12 @@ export function LifeStreamProvider({
     retry,
     clarify,
     restructure,
+    semanticRegenerationStatus,
+    regenerateSemanticsForCurrentDate,
+    clearSemanticRegenerationStatus,
+    imageAutoFetchStatus,
+    autoFetchImagesForCurrentDate,
+    clearImageAutoFetchStatus,
     getImageCandidates,
     attachImage,
     taskDock,

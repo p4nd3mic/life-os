@@ -177,6 +177,42 @@ Common “double edit” points:
 
 ---
 
+## Image auto-fetch gotchas (2026-02)
+
+### 1) `photos` vs `Photos` path casing on external drives
+
+Candidate scanning now supports both:
+
+- `/Volumes/YouTube 4TB/photos`
+- `/Volumes/YouTube 4TB/Photos`
+
+If your drive uses a different mount spelling, update `image_manual.rs` root list or candidates may appear empty.
+
+### 2) `general:*` entity keys degrade reuse
+
+If a card resolves to `general:<slug>`, image attach may create isolated catalog entries instead of canonical media/game/book keys.
+
+Mitigation in code:
+- `promote_entity_from_source_path(...)` in `image_manual.rs`
+
+This upgrades entity identity when the selected file path clearly indicates folder context (e.g., `/Photos/Media/Cowboy Bebop/...`).
+
+### 3) Auto-apply mode should be domain-safe
+
+`auto_apply` currently skips unresolved general entities to avoid writing low-quality catalog mappings.
+
+If you need broader auto-apply, add stronger entity resolution for geography/books/games before removing this guard.
+
+### 4) Candidate provider cache churn
+
+Remote candidates are staged in:
+
+- `Runtime/ImageInbox/<entity_type>/<entity_slug>/`
+
+The ranking pass now checks inbox first to avoid repeated remote fetch churn on every open.
+
+---
+
 ## Related docs
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)

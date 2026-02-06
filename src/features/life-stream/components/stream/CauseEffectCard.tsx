@@ -11,6 +11,7 @@ import type {
   CardType,
   CausalCardContent,
   CausalNode,
+  CausalSemanticMode,
   CausalRestructureAction,
 } from "../../types";
 import { GraphArrowLayer, type GraphArrowPath } from "./GraphArrowLayer";
@@ -20,7 +21,9 @@ import "./CauseEffectCard.css";
 type CauseEffectCardProps = {
   cardId: string;
   cardType: CardType;
+  cardTitle?: string;
   causal: CausalCardContent;
+  onOpenTranscript?: () => void;
   onRestructure: (
     action: CausalRestructureAction,
     options?: { sourceNodeIds?: string[]; targetMode?: "cause_effect" | "action_reward" },
@@ -28,8 +31,7 @@ type CauseEffectCardProps = {
   onRequestNodeImage?: (nodeId: string) => void;
 };
 
-const DEFAULT_VISIBLE_RIGHT_COUNT = 3;
-const DEFAULT_TOP_LINK_LIMIT = 3;
+const TOP_VISIBLE_RIGHT_NODES = 3;
 const ARROW_HEAD_LENGTH = 13;
 const ARROW_HEAD_WIDTH = 9;
 const IS_JSDOM_ENV =
@@ -54,22 +56,58 @@ function pathsEqual(previous: GraphArrowPath[], next: GraphArrowPath[]): boolean
   return true;
 }
 
-function laneLabelFromRole(side: "left" | "right", nodes: CausalNode[]): string {
-  const role = nodes[0]?.role;
-  if (side === "left") {
-    if (role === "action") return "🎯 Action";
-    if (role === "question") return "❓ Question";
-    return "🧩 Cause";
-  }
-
-  if (role === "reward") return "🏆 Reward";
-  if (role === "response") return "💬 Response";
-  return "✨ Effect";
+function inferSemanticModeFromNodes(nodes: CausalNode[]): CausalSemanticMode {
+  const leftRole = nodes.find((node) => node.role)?.role;
+  if (leftRole === "action") return "action_reward";
+  if (leftRole === "question") return "question_response";
+  if (leftRole === "cause") return "cause_effect";
+  return "statement_why";
 }
 
-function formatRole(role?: CausalNode["role"]) {
-  if (!role) return "";
-  return role.replace("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
+function laneLabel(side: "left" | "right", mode: CausalSemanticMode): string {
+  if (mode === "action_reward") {
+    return side === "left" ? "🎯 ACTION" : "🏆 REWARD";
+  }
+  if (mode === "statement_why") {
+    return side === "left" ? "🧩 STATEMENT" : "💡 WHY";
+  }
+  if (mode === "question_response") {
+    return side === "left" ? "❓ QUESTION" : "💬 RESPONSE";
+  }
+  return side === "left" ? "🧩 CAUSE" : "✨ EFFECT";
+}
+
+function overflowTitle(mode: CausalSemanticMode): string {
+  if (mode === "statement_why") return "More reasons";
+  if (mode === "action_reward") return "More outcomes";
+  if (mode === "question_response") return "More responses";
+  return "More effects";
+}
+
+function normalizeSemantic(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isGenericNodeTitle(value?: string | null) {
+  if (!value) return false;
+  const normalized = normalizeSemantic(value);
+  return [
+    "response",
+    "cause",
+    "effect",
+    "action",
+    "reward",
+    "question",
+    "thought",
+    "note",
+    "codex response",
+    "details",
+  ].includes(normalized);
 }
 
 function resolveImageSrc(url?: string) {
@@ -108,51 +146,238 @@ function buildArrowHeadPath(
   return `M ${tipX} ${tipY} L ${leftX} ${leftY} Q ${notchX} ${notchY} ${rightX} ${rightY} Z`;
 }
 
-function coerceCollapsedCount(value?: number | null): 2 | 3 {
-  if (value === 2) {
-    return 2;
+function resolveNodeTitle(node: CausalNode, fallbackTitle?: string): string {
+  const headline = node.headline?.trim();
+  if (headline && !isGenericNodeTitle(headline)) {
+    return headline;
   }
-  return 3;
+
+  const explicitTitle = node.title?.trim();
+  if (explicitTitle && !isGenericNodeTitle(explicitTitle)) {
+    return explicitTitle;
+  }
+
+  const fallback = fallbackTitle?.trim();
+  if (fallback && !isGenericNodeTitle(fallback)) {
+    return fallback;
+  }
+
+  const bulletCandidate = node.bullets
+    ?.map((item) => item.trim())
+    .find((item) => item.length > 3 && !isGenericNodeTitle(item));
+  if (bulletCandidate) {
+    return bulletCandidate.length > 120
+      ? `${bulletCandidate.slice(0, 120)}...`
+      : bulletCandidate;
+  }
+
+  const sourceText = (node.details ?? node.text).trim();
+  const sentenceCandidate = sourceText
+    .split(/[\n.!?]/)
+    .map((item) => item.trim())
+    .find((item) => item.length > 3 && !isGenericNodeTitle(item));
+
+  if (sentenceCandidate) {
+    return sentenceCandidate.length > 120
+      ? `${sentenceCandidate.slice(0, 120)}...`
+      : sentenceCandidate;
+  }
+
+  if (sourceText && !isGenericNodeTitle(sourceText)) {
+    return sourceText.length > 120
+      ? `${sourceText.slice(0, 120)}...`
+      : sourceText;
+  }
+
+  return "Details";
 }
 
-function resolveMostRecentDeliveryIndex(nodes: CausalNode[]): number {
-  let bestIndex = nodes.length - 1;
-  let bestTime = Number.NEGATIVE_INFINITY;
+function resolveSummaryLine(
+  node: CausalNode,
+  normalizedTitle: string,
+  options: { suppress: boolean },
+): string {
+  if (options.suppress) {
+    return "";
+  }
 
-  nodes.forEach((node, index) => {
-    if (!node.occurredAt) return;
-    const parsed = Date.parse(node.occurredAt);
-    if (Number.isNaN(parsed)) return;
-    if (parsed >= bestTime) {
-      bestTime = parsed;
-      bestIndex = index;
+  const explicitSummary = node.summaryLine?.trim();
+  if (explicitSummary) {
+    const normalizedSummary = normalizeSemantic(explicitSummary);
+    if (normalizedSummary !== normalizedTitle) {
+      return explicitSummary;
     }
-  });
+  }
 
-  return Math.max(0, bestIndex);
+  const firstBullet = node.bullets
+    ?.map((item) => item.trim())
+    .find((item) => {
+      if (item.length < 14) return false;
+      return normalizeSemantic(item) !== normalizedTitle;
+    });
+  if (firstBullet) {
+    return firstBullet.length > 170 ? `${firstBullet.slice(0, 170)}...` : firstBullet;
+  }
+
+  const source = (node.details ?? node.text).trim();
+  const sentence = source
+    .split(/[\n.!?]/)
+    .map((item) => item.trim())
+    .find((item) => item.length >= 16);
+  if (!sentence) {
+    return "";
+  }
+
+  const normalizedSentence = normalizeSemantic(sentence);
+  if (normalizedSentence === normalizedTitle) {
+    return "";
+  }
+
+  return sentence.length > 180 ? `${sentence.slice(0, 180)}...` : sentence;
+}
+
+function resolveOverflowLines(node: CausalNode): string[] {
+  const fromBullets = (node.bullets ?? [])
+    .map((line) => line.trim())
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, ""))
+    .filter((line) => line.length > 0);
+  if (fromBullets.length > 0) {
+    return fromBullets;
+  }
+  return node.text
+    .split("\n")
+    .map((line) => line.trim())
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, ""))
+    .filter((line) => line.length > 0);
+}
+
+function resolveRightNodeBullets(
+  node: CausalNode,
+  normalizedTitle: string,
+): string[] {
+  const fromBullets = (node.bullets ?? [])
+    .map((line) => line.trim())
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, ""))
+    .filter((line) => line.length > 0)
+    .filter((line) => normalizeSemantic(line) !== normalizedTitle);
+  if (fromBullets.length > 0) {
+    return fromBullets;
+  }
+
+  const detailsSource = (node.details ?? "").trim();
+  if (!detailsSource) {
+    return [];
+  }
+
+  const fromDetails = detailsSource
+    .split("\n")
+    .map((line) => line.trim())
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, ""))
+    .filter((line) => line.length > 0)
+    .filter((line) => normalizeSemantic(line) !== normalizedTitle);
+
+  return fromDetails;
 }
 
 function NodeCard({
   node,
   side,
   index,
+  fallbackTitle,
+  selected,
   setRef,
+  onSelectNode,
   onRequestNodeImage,
   onPreviewImage,
+  onOpenTranscript,
 }: {
   node: CausalNode;
   side: "left" | "right";
   index: number;
+  fallbackTitle?: string;
+  selected: boolean;
   setRef: (nodeId: string, element: HTMLDivElement | null) => void;
+  onSelectNode: (nodeId: string) => void;
   onRequestNodeImage?: (nodeId: string) => void;
   onPreviewImage?: (imageSrc: string, alt: string) => void;
+  onOpenTranscript?: () => void;
 }) {
+  const longPressRef = useRef<number | null>(null);
+  const didLongPressRef = useRef(false);
+  const isOverflowSummary = node.groupType === "overflow_summary";
+  const isLeftStatement = side === "left";
+
   const image = node.image;
   const hasImage = image?.status === "ready" && Boolean(image?.url);
   const imageSrc = useMemo(() => resolveImageSrc(image?.url), [image?.url]);
-  const roleLabel = formatRole(node.role);
-  const roleClass = node.role ? `is-role-${node.role}` : "";
-  const isTopRight = side === "right" && index < 3;
+
+  const nodeTitle = useMemo(() => resolveNodeTitle(node, fallbackTitle), [fallbackTitle, node]);
+  const normalizedTitle = useMemo(() => normalizeSemantic(nodeTitle), [nodeTitle]);
+
+  const summaryLine = useMemo(
+    () =>
+      resolveSummaryLine(node, normalizedTitle, {
+        suppress: isLeftStatement,
+      }),
+    [isLeftStatement, node, normalizedTitle],
+  );
+
+  const overflowLines = useMemo(() => resolveOverflowLines(node), [node]);
+  const rightDetailBullets = useMemo(
+    () => (isLeftStatement || isOverflowSummary ? [] : resolveRightNodeBullets(node, normalizedTitle)),
+    [isLeftStatement, isOverflowSummary, node, normalizedTitle],
+  );
+  const overflowStart = useMemo(
+    () => Math.max(1, node.rank ?? TOP_VISIBLE_RIGHT_NODES + 1),
+    [node.rank],
+  );
+
+  const shouldShowImageStatus = useMemo(() => {
+    if (isOverflowSummary) return false;
+    if (isLeftStatement) return true;
+    return node.isImageApplicable === true && Boolean(node.image?.status);
+  }, [isLeftStatement, isOverflowSummary, node.image?.status, node.isImageApplicable]);
+
+  const clearLongPress = useCallback(() => {
+    if (longPressRef.current !== null) {
+      window.clearTimeout(longPressRef.current);
+      longPressRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => clearLongPress();
+  }, [clearLongPress]);
+
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.pointerType !== "touch" || isOverflowSummary) {
+        return;
+      }
+      clearLongPress();
+      didLongPressRef.current = false;
+      longPressRef.current = window.setTimeout(() => {
+        didLongPressRef.current = true;
+        onSelectNode(node.id);
+        longPressRef.current = null;
+      }, 320);
+    },
+    [clearLongPress, isOverflowSummary, node.id, onSelectNode],
+  );
+
+  const handleClick = useCallback(() => {
+    if (didLongPressRef.current) {
+      didLongPressRef.current = false;
+      return;
+    }
+    if (isOverflowSummary) {
+      return;
+    }
+    onSelectNode(node.id);
+    if (isLeftStatement) {
+      onOpenTranscript?.();
+    }
+  }, [isLeftStatement, isOverflowSummary, node.id, onOpenTranscript, onSelectNode]);
 
   return (
     <div
@@ -161,52 +386,87 @@ function NodeCard({
       className={[
         "life-causal-card__node",
         `life-causal-card__node--${side}`,
-        roleClass,
-        isTopRight ? "is-top-right" : "",
+        selected ? "is-selected" : "",
+        isOverflowSummary ? "is-overflow-summary" : "",
       ]
         .filter(Boolean)
         .join(" ")}
       data-node-id={node.id}
+      onPointerDown={handlePointerDown}
+      onPointerUp={clearLongPress}
+      onPointerLeave={clearLongPress}
+      onClick={handleClick}
     >
-      {side === "right" && (
+      {side === "right" && !isOverflowSummary && (
         <span className="life-causal-card__node-rank" aria-hidden="true">
-          {index + 1}
+          {node.rank ?? index + 1}
         </span>
       )}
-      {(hasImage || roleLabel) && (
-        <div className="life-causal-card__node-meta">
-          {roleLabel && (
-            <span className="life-causal-card__role" aria-label={`Role ${roleLabel}`}>
-              {roleLabel}
-            </span>
-          )}
-        </div>
-      )}
+
+      <div className="life-causal-card__node-title">{nodeTitle}</div>
+
       {hasImage && (
         <button
           type="button"
           className="life-causal-card__node-image-button"
-          onClick={() => onPreviewImage?.(imageSrc, node.text)}
+          onClick={(event) => {
+            event.stopPropagation();
+            onPreviewImage?.(imageSrc, nodeTitle);
+          }}
           data-no-toggle
         >
           <img
             className="life-causal-card__node-image"
             src={imageSrc}
-            alt={node.text}
+            alt={nodeTitle}
             loading="lazy"
           />
           <span className="life-causal-card__node-image-zoom">🔍 Expand</span>
         </button>
       )}
-      <div className="life-causal-card__node-text">{node.text}</div>
-      {image?.status === "missing" && (
+
+      {!isOverflowSummary && summaryLine && (
+        <div className="life-causal-card__node-summary-line">{summaryLine}</div>
+      )}
+
+      {isOverflowSummary && (
+        <ul
+          className="life-causal-card__overflow-list"
+          data-no-toggle
+        >
+          {overflowLines.map((line, lineIndex) => {
+            const number = overflowStart + lineIndex;
+            return (
+              <li key={`${node.id}:overflow:${lineIndex}`}>
+                <span className="life-causal-card__overflow-number" aria-hidden="true">
+                  {number}.
+                </span>
+                <span className="life-causal-card__overflow-text">{line}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {!isOverflowSummary && !isLeftStatement && rightDetailBullets.length > 0 && (
+        <ul className="life-causal-card__node-bullets" data-no-toggle>
+          {rightDetailBullets.map((line, lineIndex) => (
+            <li key={`${node.id}:detail:${lineIndex}`}>{line}</li>
+          ))}
+        </ul>
+      )}
+
+      {shouldShowImageStatus && image?.status === "missing" && (
         <div className="life-causal-card__node-status">
           Missing image
           {onRequestNodeImage && (
             <button
               type="button"
               className="life-causal-card__node-image-action"
-              onClick={() => onRequestNodeImage(node.id)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRequestNodeImage(node.id);
+              }}
               data-no-toggle
             >
               📷 Set image
@@ -214,14 +474,18 @@ function NodeCard({
           )}
         </div>
       )}
-      {image?.status === "upload_prompt" && (
+
+      {shouldShowImageStatus && image?.status === "upload_prompt" && (
         <div className="life-causal-card__node-status">
           Add image later
           {onRequestNodeImage && (
             <button
               type="button"
               className="life-causal-card__node-image-action"
-              onClick={() => onRequestNodeImage(node.id)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRequestNodeImage(node.id);
+              }}
               data-no-toggle
             >
               📷 Set image
@@ -229,13 +493,17 @@ function NodeCard({
           )}
         </div>
       )}
-      {!hasImage && !image?.status && onRequestNodeImage && (
+
+      {shouldShowImageStatus && !hasImage && !image?.status && isLeftStatement && onRequestNodeImage && (
         <div className="life-causal-card__node-status">
           No image yet
           <button
             type="button"
             className="life-causal-card__node-image-action"
-            onClick={() => onRequestNodeImage(node.id)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRequestNodeImage(node.id);
+            }}
             data-no-toggle
           >
             📷 Set image
@@ -249,7 +517,9 @@ function NodeCard({
 export function CauseEffectCard({
   cardId,
   cardType,
+  cardTitle,
   causal,
+  onOpenTranscript,
   onRestructure,
   onRequestNodeImage,
 }: CauseEffectCardProps) {
@@ -257,17 +527,12 @@ export function CauseEffectCard({
     () => `life-causal-link-gradient-${cardId.replace(/[^a-zA-Z0-9_-]/g, "-")}`,
     [cardId],
   );
-  const defaultCollapsedCount = coerceCollapsedCount(causal.layout?.visibleRightCount);
-  const topLinkLimit =
-    causal.layout?.topLinkLimit && causal.layout.topLinkLimit > 0
-      ? causal.layout.topLinkLimit
-      : DEFAULT_TOP_LINK_LIMIT;
-  const isDenseDeliverySession = cardType === "delivery_session";
+  const semanticMode = causal.semanticMode ?? inferSemanticModeFromNodes(causal.leftNodes);
 
-  const [showAllRightNodes, setShowAllRightNodes] = useState(false);
-  const [collapsedCount, setCollapsedCount] = useState<2 | 3>(defaultCollapsedCount);
   const [paths, setPaths] = useState<GraphArrowPath[]>([]);
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const leftNodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const rightNodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -275,11 +540,8 @@ export function CauseEffectCard({
   const disposedRef = useRef(false);
 
   useEffect(() => {
-    setCollapsedCount(defaultCollapsedCount);
-  }, [defaultCollapsedCount, cardId]);
-
-  useEffect(() => {
     setPreviewImage(null);
+    setSelectedNodeId(null);
   }, [cardId]);
 
   useEffect(() => {
@@ -295,45 +557,108 @@ export function CauseEffectCard({
     return () => window.removeEventListener("keydown", handleEscape);
   }, [previewImage]);
 
+  const useTailCompaction = cardType === "delivery_session";
+  const hasOverflow = causal.rightNodes.length > TOP_VISIBLE_RIGHT_NODES;
+
+  const primaryRightNodes = useMemo(() => {
+    if (!hasOverflow) {
+      return causal.rightNodes;
+    }
+    if (useTailCompaction) {
+      return causal.rightNodes.slice(causal.rightNodes.length - TOP_VISIBLE_RIGHT_NODES);
+    }
+    return causal.rightNodes.slice(0, TOP_VISIBLE_RIGHT_NODES);
+  }, [causal.rightNodes, hasOverflow, useTailCompaction]);
+
+  const hiddenRightNodes = useMemo(() => {
+    if (!hasOverflow) {
+      return [];
+    }
+    if (useTailCompaction) {
+      return causal.rightNodes.slice(0, causal.rightNodes.length - TOP_VISIBLE_RIGHT_NODES);
+    }
+    return causal.rightNodes.slice(TOP_VISIBLE_RIGHT_NODES);
+  }, [causal.rightNodes, hasOverflow, useTailCompaction]);
+
+  const overflowNode = useMemo<CausalNode | null>(() => {
+    if (hiddenRightNodes.length === 0) {
+      return null;
+    }
+
+    const lines = hiddenRightNodes.map((node) => {
+      const title = resolveNodeTitle(node);
+      const summary = (node.summaryLine ?? "").trim();
+      const normalizedTitle = normalizeSemantic(title);
+      const normalizedSummary = normalizeSemantic(summary);
+      return (
+        summary.length > 0 && normalizedSummary !== normalizedTitle
+          ? `${title} — ${summary}`
+          : title
+      );
+    });
+
+    return {
+      id: `${cardId}:right:overflow-summary`,
+      text: lines.join("\n"),
+      headline: overflowTitle(semanticMode),
+      bullets: lines,
+      details: lines.join("\n"),
+      role: causal.rightNodes[0]?.role,
+      rank: hiddenRightNodes[0]?.rank ?? 1,
+      groupType: "overflow_summary",
+      isImageApplicable: false,
+    };
+  }, [cardId, causal.rightNodes, hiddenRightNodes, semanticMode]);
+
   const visibleRightNodes = useMemo(() => {
-    if (showAllRightNodes) {
-      return causal.rightNodes;
+    if (!overflowNode) {
+      return primaryRightNodes;
     }
+    return [
+      ...primaryRightNodes,
+      overflowNode,
+    ];
+  }, [overflowNode, primaryRightNodes]);
 
-    const collapseLimit = Math.min(
-      Math.max(2, collapsedCount),
-      DEFAULT_VISIBLE_RIGHT_COUNT,
-    );
-    if (causal.rightNodes.length <= collapseLimit) {
-      return causal.rightNodes;
-    }
-
-    if (!isDenseDeliverySession) {
-      return causal.rightNodes.slice(0, collapseLimit);
-    }
-
-    const newestIndex = resolveMostRecentDeliveryIndex(causal.rightNodes);
-    const start = Math.max(0, newestIndex - collapseLimit + 1);
-    return causal.rightNodes.slice(start, newestIndex + 1);
-  }, [causal.rightNodes, collapsedCount, isDenseDeliverySession, showAllRightNodes]);
-
+  const leftNodeIds = useMemo(
+    () => new Set(causal.leftNodes.map((node) => node.id)),
+    [causal.leftNodes],
+  );
+  const rightNodeIds = useMemo(
+    () => new Set(causal.rightNodes.map((node) => node.id)),
+    [causal.rightNodes],
+  );
   const visibleRightNodeIds = useMemo(
     () => new Set(visibleRightNodes.map((node) => node.id)),
     [visibleRightNodes],
   );
 
-  const linkCandidates = useMemo(() => {
-    return causal.links.filter((link) => visibleRightNodeIds.has(link.toId));
-  }, [causal.links, visibleRightNodeIds]);
+  useEffect(() => {
+    if (!selectedNodeId) {
+      return;
+    }
+    if (leftNodeIds.has(selectedNodeId) || rightNodeIds.has(selectedNodeId)) {
+      return;
+    }
+    setSelectedNodeId(null);
+  }, [leftNodeIds, rightNodeIds, selectedNodeId]);
 
   const visibleLinks = useMemo(() => {
-    if (showAllRightNodes || linkCandidates.length <= topLinkLimit) {
-      return linkCandidates;
+    const base = causal.links.filter((link) => visibleRightNodeIds.has(link.toId));
+    if (!overflowNode || causal.leftNodes.length === 0) {
+      return base;
     }
-    return [...linkCandidates]
-      .sort((a, b) => (b.strength ?? 1) - (a.strength ?? 1))
-      .slice(0, topLinkLimit);
-  }, [linkCandidates, showAllRightNodes, topLinkLimit]);
+
+    return [
+      ...base,
+      {
+        id: `${cardId}:link:overflow`,
+        fromId: causal.leftNodes[0].id,
+        toId: overflowNode.id,
+        strength: 0.84,
+      },
+    ];
+  }, [cardId, causal.leftNodes, causal.links, overflowNode, visibleRightNodeIds]);
 
   const registerLeftRef = useCallback((nodeId: string, element: HTMLDivElement | null) => {
     if (element) {
@@ -359,15 +684,18 @@ export function CauseEffectCard({
     }
 
     const containerBounds = container.getBoundingClientRect();
-    const nextPaths: GraphArrowPath[] = [];
+    const sourceCounter = new Map<string, number>();
+    const sourceTotals = new Map<string, number>();
+    for (const link of visibleLinks) {
+      sourceTotals.set(link.fromId, (sourceTotals.get(link.fromId) ?? 0) + 1);
+    }
 
+    const nextPaths: GraphArrowPath[] = [];
     for (const link of visibleLinks) {
       const fromElement =
-        leftNodeRefs.current.get(link.fromId) ??
-        rightNodeRefs.current.get(link.fromId);
+        leftNodeRefs.current.get(link.fromId) ?? rightNodeRefs.current.get(link.fromId);
       const toElement =
-        rightNodeRefs.current.get(link.toId) ??
-        leftNodeRefs.current.get(link.toId);
+        rightNodeRefs.current.get(link.toId) ?? leftNodeRefs.current.get(link.toId);
 
       if (!fromElement || !toElement) {
         continue;
@@ -380,10 +708,15 @@ export function CauseEffectCard({
       const endX = toBounds.left - containerBounds.left - 0.5;
       const endY = toBounds.top - containerBounds.top + toBounds.height / 2;
 
-      const horizontalDistance = Math.max(36, endX - startX);
-      const c1x = startX + horizontalDistance * 0.38;
-      const c1y = startY;
-      const c2x = endX - horizontalDistance * 0.46;
+      const position = sourceCounter.get(link.fromId) ?? 0;
+      sourceCounter.set(link.fromId, position + 1);
+      const total = sourceTotals.get(link.fromId) ?? 1;
+      const spread = (position - (total - 1) / 2) * 7;
+
+      const horizontalDistance = Math.max(42, endX - startX);
+      const c1x = startX + horizontalDistance * 0.34;
+      const c1y = startY + spread;
+      const c2x = endX - horizontalDistance * 0.44;
       const c2y = endY;
       const pathD = `M ${startX} ${startY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${endX} ${endY}`;
       const headD = buildArrowHeadPath(endX, endY, c2x, c2y);
@@ -392,7 +725,6 @@ export function CauseEffectCard({
         id: link.id ?? `${link.fromId}->${link.toId}`,
         d: pathD,
         headD,
-        dimmed: false,
       });
     }
 
@@ -425,21 +757,23 @@ export function CauseEffectCard({
 
   useLayoutEffect(() => {
     scheduleLinkPathRecompute();
-  }, [scheduleLinkPathRecompute, visibleRightNodes, visibleLinks, causal.leftNodes]);
+  }, [scheduleLinkPathRecompute, visibleLinks, visibleRightNodes, causal.leftNodes]);
 
   useEffect(() => {
     if (IS_JSDOM_ENV) {
       return;
     }
+
     const handleResize = () => scheduleLinkPathRecompute();
-    const scrollParent =
-      containerRef.current?.closest(".life-stream-messages") ?? window;
+    const scrollParent = containerRef.current?.closest(".life-stream-messages") ?? window;
     const handleScroll = () => scheduleLinkPathRecompute();
+
     window.addEventListener("resize", handleResize);
     window.addEventListener("scroll", handleScroll, { passive: true });
     if (scrollParent instanceof Element) {
       scrollParent.addEventListener("scroll", handleScroll, { passive: true });
     }
+
     return () => {
       window.removeEventListener("resize", handleResize);
       window.removeEventListener("scroll", handleScroll);
@@ -450,10 +784,7 @@ export function CauseEffectCard({
   }, [scheduleLinkPathRecompute]);
 
   useEffect(() => {
-    if (IS_JSDOM_ENV) {
-      return;
-    }
-    if (typeof ResizeObserver === "undefined") {
+    if (IS_JSDOM_ENV || typeof ResizeObserver === "undefined") {
       return;
     }
 
@@ -465,7 +796,6 @@ export function CauseEffectCard({
     if (container) {
       observer.observe(container);
     }
-
     for (const element of leftNodeRefs.current.values()) {
       observer.observe(element);
     }
@@ -480,6 +810,7 @@ export function CauseEffectCard({
     if (IS_JSDOM_ENV) {
       return;
     }
+
     const fonts = (document as Document & { fonts?: { ready?: Promise<unknown> } }).fonts;
     if (!fonts?.ready) {
       return;
@@ -510,29 +841,113 @@ export function CauseEffectCard({
     };
   }, []);
 
-  const hasHiddenRightNodes = causal.rightNodes.length > collapsedCount;
-  const leftLaneLabel = laneLabelFromRole("left", causal.leftNodes);
-  const rightLaneLabel = laneLabelFromRole("right", causal.rightNodes);
-  const canToggleDensity = isDenseDeliverySession && causal.rightNodes.length >= 3;
+  const selectedNode = useMemo(() => {
+    if (!selectedNodeId) {
+      return undefined;
+    }
+    return [...causal.leftNodes, ...causal.rightNodes].find(
+      (node) => node.id === selectedNodeId,
+    );
+  }, [causal.leftNodes, causal.rightNodes, selectedNodeId]);
+
+  const selectedNodeSide: "left" | "right" | null = useMemo(() => {
+    if (!selectedNodeId) {
+      return null;
+    }
+    if (leftNodeIds.has(selectedNodeId)) {
+      return "left";
+    }
+    if (rightNodeIds.has(selectedNodeId)) {
+      return "right";
+    }
+    return null;
+  }, [leftNodeIds, rightNodeIds, selectedNodeId]);
+
+  const splitSourceNodeIds = useMemo(() => {
+    if (selectedNodeSide === "left" && selectedNodeId) {
+      return [selectedNodeId];
+    }
+    if (causal.leftNodes[0]) {
+      return [causal.leftNodes[0].id];
+    }
+    return [];
+  }, [causal.leftNodes, selectedNodeId, selectedNodeSide]);
+
+  const mergeSourceNodeIds = useMemo(() => {
+    if (causal.rightNodes.length < 2) {
+      return [];
+    }
+    if (!(selectedNodeSide === "right" && selectedNodeId)) {
+      return causal.rightNodes.slice(0, 2).map((node) => node.id);
+    }
+
+    const selectedIndex = causal.rightNodes.findIndex((node) => node.id === selectedNodeId);
+    if (selectedIndex < 0) {
+      return causal.rightNodes.slice(0, 2).map((node) => node.id);
+    }
+
+    const selected = causal.rightNodes[selectedIndex];
+    const partner =
+      causal.rightNodes[selectedIndex + 1] ?? causal.rightNodes[selectedIndex - 1];
+    if (!partner) {
+      return [selected.id];
+    }
+    return [selected.id, partner.id];
+  }, [causal.rightNodes, selectedNodeId, selectedNodeSide]);
+
+  const handleSelectNode = useCallback((nodeId: string) => {
+    setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
+  }, []);
 
   const handleSplitCause = useCallback(() => {
-    onRestructure("split_cause");
-  }, [onRestructure]);
+    if (!splitSourceNodeIds.length) {
+      return;
+    }
+    onRestructure("split_cause", { sourceNodeIds: splitSourceNodeIds });
+  }, [onRestructure, splitSourceNodeIds]);
 
   const handleMergeEffects = useCallback(() => {
-    onRestructure("merge_effects");
-  }, [onRestructure]);
+    if (mergeSourceNodeIds.length < 2) {
+      return;
+    }
+    onRestructure("merge_effects", { sourceNodeIds: mergeSourceNodeIds });
+  }, [mergeSourceNodeIds, onRestructure]);
 
   const handleRelink = useCallback(() => {
-    onRestructure("relink_arrows");
-  }, [onRestructure]);
+    onRestructure("relink_arrows", {
+      sourceNodeIds: selectedNodeId ? [selectedNodeId] : undefined,
+    });
+  }, [onRestructure, selectedNodeId]);
 
   const handleReframe = useCallback(() => {
-    onRestructure("reframe_mode");
-  }, [onRestructure]);
+    const hasRewardRoles = causal.rightNodes.some((node) => node.role === "reward");
+    onRestructure("reframe_mode", {
+      sourceNodeIds: selectedNodeId ? [selectedNodeId] : undefined,
+      targetMode: hasRewardRoles ? "cause_effect" : "action_reward",
+    });
+  }, [causal.rightNodes, onRestructure, selectedNodeId]);
 
-  const canSplitCause = causal.leftNodes.length === 1;
+  const canSplitCause = splitSourceNodeIds.length > 0;
   const canMergeEffects = causal.rightNodes.length >= 2;
+  const selectedNodeTitle = useMemo(() => {
+    if (!selectedNode) {
+      return "";
+    }
+
+    const candidate =
+      selectedNode.headline?.trim() ||
+      selectedNode.title?.trim() ||
+      selectedNode.bullets?.find((item) => item.trim().length > 0)?.trim() ||
+      selectedNode.text.trim();
+
+    if (!candidate) {
+      return "";
+    }
+    return candidate.length > 84 ? `${candidate.slice(0, 84)}…` : candidate;
+  }, [selectedNode]);
+
+  const leftLaneLabel = laneLabel("left", semanticMode);
+  const rightLaneLabel = laneLabel("right", semanticMode);
 
   return (
     <section className="life-causal-card" data-card-id={cardId}>
@@ -553,7 +968,11 @@ export function CauseEffectCard({
               node={node}
               side="left"
               index={index}
+              fallbackTitle={index === 0 ? cardTitle : undefined}
+              selected={selectedNodeId === node.id}
               setRef={registerLeftRef}
+              onSelectNode={handleSelectNode}
+              onOpenTranscript={onOpenTranscript}
               onRequestNodeImage={onRequestNodeImage}
               onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
             />
@@ -569,7 +988,9 @@ export function CauseEffectCard({
               node={node}
               side="right"
               index={index}
+              selected={selectedNodeId === node.id}
               setRef={registerRightRef}
+              onSelectNode={handleSelectNode}
               onRequestNodeImage={onRequestNodeImage}
               onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
             />
@@ -577,68 +998,45 @@ export function CauseEffectCard({
         </div>
       </div>
 
-      {(hasHiddenRightNodes || canToggleDensity) && (
-        <div className="life-causal-card__controls" data-no-toggle>
-          {canToggleDensity && !showAllRightNodes && (
+      {selectedNode && (
+        <div className="life-causal-card__context-toolbar" data-no-toggle>
+          <span className="life-causal-card__context-selected">
+            Selected {selectedNodeSide === "left" ? "source" : "response"}: {selectedNodeTitle}
+          </span>
+          <div className="life-causal-card__actions">
             <button
               type="button"
-              className="life-causal-card__control"
-              onClick={() => setCollapsedCount((prev) => (prev === 3 ? 2 : 3))}
+              className="life-causal-card__action"
+              onClick={handleSplitCause}
+              disabled={!canSplitCause}
             >
-              Latest {collapsedCount} (toggle 2/3)
+              ✂️ Split cause
             </button>
-          )}
-          {hasHiddenRightNodes && (
             <button
               type="button"
-              className="life-causal-card__control"
-              onClick={() => setShowAllRightNodes((prev) => !prev)}
+              className="life-causal-card__action"
+              onClick={handleMergeEffects}
+              disabled={!canMergeEffects}
             >
-              {showAllRightNodes
-                ? `Show latest ${collapsedCount}`
-                : `Show all outcomes (${causal.rightNodes.length})`}
+              🧩 Merge effects
             </button>
-          )}
-          {!showAllRightNodes && linkCandidates.length > visibleLinks.length && (
-            <span className="life-causal-card__control-hint">
-              Top links shown ({visibleLinks.length}/{linkCandidates.length})
-            </span>
-          )}
+            <button
+              type="button"
+              className="life-causal-card__action"
+              onClick={handleRelink}
+            >
+              🔗 Re-link arrows
+            </button>
+            <button
+              type="button"
+              className="life-causal-card__action"
+              onClick={handleReframe}
+            >
+              🔁 Reframe mode
+            </button>
+          </div>
         </div>
       )}
-
-      <div className="life-causal-card__actions" data-no-toggle>
-        <button
-          type="button"
-          className="life-causal-card__action"
-          onClick={handleSplitCause}
-          disabled={!canSplitCause}
-        >
-          ✂️ Split cause
-        </button>
-        <button
-          type="button"
-          className="life-causal-card__action"
-          onClick={handleMergeEffects}
-          disabled={!canMergeEffects}
-        >
-          🧩 Merge effects
-        </button>
-        <button
-          type="button"
-          className="life-causal-card__action"
-          onClick={handleRelink}
-        >
-          🔗 Re-link arrows
-        </button>
-        <button
-          type="button"
-          className="life-causal-card__action"
-          onClick={handleReframe}
-        >
-          🔁 Reframe mode
-        </button>
-      </div>
 
       {previewImage && (
         <div
