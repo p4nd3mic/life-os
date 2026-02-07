@@ -1,4 +1,22 @@
 .life-causal-card {
+  --life-surface-primary: linear-gradient(
+    180deg,
+    rgba(9, 15, 26, 0.96) 0%,
+    rgba(7, 12, 22, 0.9) 100%
+  );
+  --life-surface-secondary: linear-gradient(
+    180deg,
+    rgba(8, 13, 24, 0.94) 0%,
+    rgba(6, 10, 20, 0.88) 100%
+  );
+  --life-surface-selected: linear-gradient(
+    180deg,
+    rgba(11, 20, 33, 0.98) 0%,
+    rgba(9, 17, 30, 0.92) 100%
+  );
+  --life-radius-card: 14px;
+  --life-card-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+  --life-card-highlight: inset 0 1px 0 rgba(186, 230, 253, 0.08);
   margin-bottom: 8px;
 }
 
@@ -126,15 +144,11 @@
   --life-node-stagger-y: 0px;
   position: relative;
   overflow: hidden;
-  border-radius: 12px;
+  border-radius: var(--life-radius-card);
   border: 1px solid var(--border-subtle);
-  background: linear-gradient(
-    180deg,
-    rgba(8, 12, 20, 0.93) 0%,
-    rgba(8, 12, 20, 0.8) 100%
-  );
+  background: var(--life-surface-secondary);
   padding: 12px 13px 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--life-card-shadow), var(--life-card-highlight);
   transition:
     transform 150ms ease,
     box-shadow 160ms ease,
@@ -147,10 +161,11 @@
 
 .life-causal-card__node--left {
   border-left: 3px solid rgba(251, 191, 36, 0.9);
+  background: var(--life-surface-primary);
 }
 
 .life-causal-card__node--right {
-  border-left: 3px solid rgba(74, 222, 128, 0.88);
+  border-left: 3px solid rgba(52, 211, 153, 0.86);
 }
 
 .life-causal-card__node.is-selected {
@@ -158,12 +173,8 @@
   box-shadow:
     0 0 0 1px rgba(56, 189, 248, 0.42),
     0 0 0 3px rgba(56, 189, 248, 0.15),
-    0 8px 24px rgba(0, 0, 0, 0.34);
-  background: linear-gradient(
-    180deg,
-    rgba(9, 15, 24, 0.96) 0%,
-    rgba(9, 15, 24, 0.84) 100%
-  );
+    0 14px 30px rgba(0, 0, 0, 0.34);
+  background: var(--life-surface-selected);
   transform: translate3d(0, var(--life-node-stagger-y), 0) scale(1.01);
 }
 
