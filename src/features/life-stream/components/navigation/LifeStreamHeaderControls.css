@@ -39,9 +39,9 @@
   flex-direction: column;
   gap: 8px;
   min-height: 46px;
-  min-width: 220px;
+  min-width: 240px;
   flex: 1 1 280px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .life-stream-header-controls .life-stream-semantic-actions__button {
@@ -58,12 +58,11 @@
 
 .life-stream-header-controls .life-stream-semantic-actions__status {
   font-size: 0.74rem;
-  line-height: 1.2;
+  line-height: 1.28;
   color: rgba(191, 219, 254, 0.95);
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .life-stream-header-controls .life-stream-semantic-actions__status.is-error {
@@ -72,6 +71,38 @@
 
 .life-stream-header-controls .life-stream-semantic-actions__status--image {
   color: rgba(186, 230, 253, 0.95);
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__status--debug {
+  color: rgba(196, 181, 253, 0.96);
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__status--auth {
+  color: rgba(148, 163, 184, 0.98);
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__status--auth-healthy {
+  color: rgba(110, 231, 183, 0.98);
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__status--auth-unauthorized {
+  color: rgba(252, 165, 165, 0.98);
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__status--auth-checking {
+  color: rgba(191, 219, 254, 0.98);
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__button--auth-healthy {
+  border-color: rgba(52, 211, 153, 0.55);
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__button--auth-unauthorized {
+  border-color: rgba(248, 113, 113, 0.58);
+}
+
+.life-stream-header-controls .life-stream-semantic-actions__button--auth-checking {
+  border-color: rgba(125, 211, 252, 0.5);
 }
 
 .life-stream-header-controls .life-stream-filters__summary {

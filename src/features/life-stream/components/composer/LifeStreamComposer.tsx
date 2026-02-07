@@ -98,7 +98,14 @@ export function LifeStreamComposer({
   onDismissDictationHint,
   attachmentsEnabled = true,
 }: LifeStreamComposerProps) {
-  const { submit, submitStatus, cards } = useLifeStreamContext();
+  const {
+    submit,
+    submitStatus,
+    cards,
+    taskDock,
+    setTaskDockCollapsed,
+    setTaskDockHidden,
+  } = useLifeStreamContext();
   const [draftText, setDraftText] = useState("");
   const [traceOpen, setTraceOpen] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
@@ -299,6 +306,20 @@ export function LifeStreamComposer({
           onClick={() => setShowLogs((prev) => !prev)}
         >
           {showLogs ? "Hide Logs" : "Show Logs"}
+        </button>
+        <button
+          type="button"
+          className={`life-stream-log-toggle${taskDock.hidden ? "" : " is-active"}`}
+          onClick={() => {
+            if (taskDock.hidden) {
+              setTaskDockHidden(false);
+              setTaskDockCollapsed(false);
+              return;
+            }
+            setTaskDockHidden(true);
+          }}
+        >
+          {taskDock.hidden ? "Show Tasks" : "Hide Tasks"}
         </button>
       </div>
 

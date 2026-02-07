@@ -17,6 +17,11 @@ export function LifeStreamHeaderControls() {
     goToToday,
     semanticRegenerationStatus,
     regenerateSemanticsForCurrentDate,
+    dayThreadDebugStatus,
+    inspectDayThreadForCurrentDate,
+    resetDayThreadAndRebuildForCurrentDate,
+    authHealthStatus,
+    checkAuthHealth,
     imageAutoFetchStatus,
     autoFetchImagesForCurrentDate,
     activeFilters,
@@ -50,6 +55,46 @@ export function LifeStreamHeaderControls() {
             type="button"
             className="life-segment-button life-stream-semantic-actions__button"
             onClick={() => {
+              void inspectDayThreadForCurrentDate();
+            }}
+            disabled={dayThreadDebugStatus.state === "running"}
+          >
+            {dayThreadDebugStatus.state === "running"
+              ? "🧪 Inspecting..."
+              : "🧪 Day-thread debug"}
+          </button>
+          <button
+            type="button"
+            className="life-segment-button life-stream-semantic-actions__button"
+            onClick={() => {
+              void resetDayThreadAndRebuildForCurrentDate();
+            }}
+            disabled={dayThreadDebugStatus.state === "running"}
+          >
+            {dayThreadDebugStatus.state === "running"
+              ? "♻️ Resetting..."
+              : "♻️ Reset day-thread"}
+          </button>
+          <button
+            type="button"
+            className={`life-segment-button life-stream-semantic-actions__button life-stream-semantic-actions__button--auth-${authHealthStatus.state}`}
+            onClick={() => {
+              void checkAuthHealth();
+            }}
+            disabled={authHealthStatus.state === "checking"}
+          >
+            {authHealthStatus.state === "checking"
+              ? "🩺 Checking auth…"
+              : authHealthStatus.state === "healthy"
+                ? "🩺 Auth: healthy"
+                : authHealthStatus.state === "unauthorized"
+                  ? "🩺 Auth: login needed"
+                  : "🩺 Auth check"}
+          </button>
+          <button
+            type="button"
+            className="life-segment-button life-stream-semantic-actions__button"
+            onClick={() => {
               void autoFetchImagesForCurrentDate("review_first");
             }}
             disabled={imageAutoFetchStatus.state === "running"}
@@ -77,6 +122,29 @@ export function LifeStreamHeaderControls() {
             role="status"
           >
             {semanticRegenerationStatus.message}
+          </span>
+        )}
+        {dayThreadDebugStatus.message && (
+          <span
+            className={`life-stream-semantic-actions__status life-stream-semantic-actions__status--debug${
+              dayThreadDebugStatus.state === "error" ? " is-error" : ""
+            }`}
+            role="status"
+          >
+            {dayThreadDebugStatus.message}
+          </span>
+        )}
+        {authHealthStatus.message && (
+          <span
+            className={`life-stream-semantic-actions__status life-stream-semantic-actions__status--auth life-stream-semantic-actions__status--auth-${authHealthStatus.state}${
+              authHealthStatus.state === "error" ||
+              authHealthStatus.state === "unauthorized"
+                ? " is-error"
+                : ""
+            }`}
+            role="status"
+          >
+            {authHealthStatus.message}
           </span>
         )}
         {imageAutoFetchStatus.message && (

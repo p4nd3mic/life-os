@@ -67,7 +67,7 @@ use auto_flush::{
     build_snapshot, parse_memory_flush_result, run_memory_flush_summarizer, write_memory_flush,
     AutoMemoryRuntime,
 };
-use backend::app_server::{spawn_workspace_session, WorkspaceSession};
+use backend::app_server::{next_background_callback_id, spawn_workspace_session, WorkspaceSession};
 use backend::events::{AppServerEvent, EventSink, TerminalOutput};
 use browser::service::BrowserService;
 use codex_params::{build_turn_start_params, build_user_input};
@@ -4484,11 +4484,11 @@ Changes:\n{diff}"
             .to_string();
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+        let callback_consumer_id = next_background_callback_id("daemon-commit-message");
 
-        {
-            let mut callbacks = session.background_thread_callbacks.lock().await;
-            callbacks.insert(thread_id.clone(), tx);
-        }
+        session
+            .register_background_callback(thread_id.as_str(), callback_consumer_id.as_str(), tx)
+            .await;
 
         let turn_params = build_turn_start_params(
             &thread_id,
@@ -4505,10 +4505,12 @@ Changes:\n{diff}"
         let turn_result = match turn_result {
             Ok(result) => result,
             Err(error) => {
-                {
-                    let mut callbacks = session.background_thread_callbacks.lock().await;
-                    callbacks.remove(&thread_id);
-                }
+                session
+                    .unregister_background_callback(
+                        thread_id.as_str(),
+                        callback_consumer_id.as_str(),
+                    )
+                    .await;
                 let archive_params = json!({ "threadId": thread_id.as_str() });
                 let _ = session.send_request("thread/archive", archive_params).await;
                 return Err(error);
@@ -4520,10 +4522,9 @@ Changes:\n{diff}"
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("Unknown error starting turn");
-            {
-                let mut callbacks = session.background_thread_callbacks.lock().await;
-                callbacks.remove(&thread_id);
-            }
+            session
+                .unregister_background_callback(thread_id.as_str(), callback_consumer_id.as_str())
+                .await;
             let archive_params = json!({ "threadId": thread_id.as_str() });
             let _ = session.send_request("thread/archive", archive_params).await;
             return Err(error_msg.to_string());
@@ -4561,10 +4562,9 @@ Changes:\n{diff}"
         })
         .await;
 
-        {
-            let mut callbacks = session.background_thread_callbacks.lock().await;
-            callbacks.remove(&thread_id);
-        }
+        session
+            .unregister_background_callback(thread_id.as_str(), callback_consumer_id.as_str())
+            .await;
 
         let archive_params = json!({ "threadId": thread_id });
         let _ = session.send_request("thread/archive", archive_params).await;
@@ -5500,21 +5500,20 @@ async fn handle_rpc_request(
         }
         "life_stream_task_dock_save" => {
             let workspace_id = parse_string(&params, "workspaceId")?;
-            let payload = parse_optional_value(&params, "payload")
-                .ok_or("missing `payload`")?;
+            let payload = parse_optional_value(&params, "payload").ok_or("missing `payload`")?;
             let payload = serde_json::from_value::<life_stream::TaskDockPayload>(payload)
                 .map_err(|error| format!("invalid `payload`: {error}"))?;
-            state.life_stream_task_dock_save(workspace_id, payload).await
+            state
+                .life_stream_task_dock_save(workspace_id, payload)
+                .await
         }
         "life_stream_restructure" => {
             let workspace_id = parse_string(&params, "workspaceId")?;
             let card_id = parse_string(&params, "cardId")?;
-            let action_value = parse_optional_value(&params, "action")
-                .ok_or("missing `action`")?;
-            let action = serde_json::from_value::<life_stream::CausalRestructureAction>(
-                action_value,
-            )
-            .map_err(|error| format!("invalid `action`: {error}"))?;
+            let action_value = parse_optional_value(&params, "action").ok_or("missing `action`")?;
+            let action =
+                serde_json::from_value::<life_stream::CausalRestructureAction>(action_value)
+                    .map_err(|error| format!("invalid `action`: {error}"))?;
             let source_node_ids =
                 parse_optional_string_array(&params, "sourceNodeIds").unwrap_or_default();
             let target_mode = parse_optional_string(&params, "targetMode");

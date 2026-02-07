@@ -16,11 +16,48 @@ use crate::backend::events::{AppServerEvent, EventSink};
 use crate::types::WorkspaceEntry;
 
 fn extract_thread_id(value: &Value) -> Option<String> {
-    value
-        .get("params")
-        .and_then(|p| p.get("threadId").or_else(|| p.get("thread_id")))
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
+    fn find_thread_id(value: &Value, depth: usize) -> Option<String> {
+        if depth > 6 {
+            return None;
+        }
+
+        if let Some(thread_id) = value
+            .get("threadId")
+            .or_else(|| value.get("thread_id"))
+            .or_else(|| value.get("conversationId"))
+            .or_else(|| value.get("conversation_id"))
+            .and_then(|entry| entry.as_str())
+            .map(|entry| entry.trim())
+            .filter(|entry| !entry.is_empty())
+        {
+            return Some(thread_id.to_string());
+        }
+
+        if let Some(thread_obj) = value.get("thread") {
+            if let Some(thread_id) = thread_obj
+                .get("id")
+                .or_else(|| thread_obj.get("threadId"))
+                .or_else(|| thread_obj.get("thread_id"))
+                .and_then(|entry| entry.as_str())
+                .map(|entry| entry.trim())
+                .filter(|entry| !entry.is_empty())
+            {
+                return Some(thread_id.to_string());
+            }
+        }
+
+        match value {
+            Value::Object(map) => map
+                .values()
+                .find_map(|child| find_thread_id(child, depth + 1)),
+            Value::Array(items) => items
+                .iter()
+                .find_map(|child| find_thread_id(child, depth + 1)),
+            _ => None,
+        }
+    }
+
+    find_thread_id(value, 0)
 }
 
 pub(crate) struct WorkspaceSession {
@@ -31,8 +68,10 @@ pub(crate) struct WorkspaceSession {
     pub(crate) next_id: AtomicU64,
     pub(crate) initialized: AtomicBool,
     pub(crate) capabilities: Mutex<Option<Value>>,
-    /// Callbacks for background threads - events for these threadIds are sent through the channel
-    pub(crate) background_thread_callbacks: Mutex<HashMap<String, mpsc::UnboundedSender<Value>>>,
+    /// Callbacks for background threads.
+    /// threadId -> (consumerId -> sender)
+    pub(crate) background_thread_callbacks:
+        Mutex<HashMap<String, HashMap<String, mpsc::UnboundedSender<Value>>>>,
 }
 
 impl WorkspaceSession {
@@ -95,6 +134,45 @@ impl WorkspaceSession {
         }
         self.initialized.store(true, Ordering::SeqCst);
     }
+
+    pub(crate) async fn register_background_callback(
+        &self,
+        thread_id: &str,
+        consumer_id: &str,
+        sender: mpsc::UnboundedSender<Value>,
+    ) {
+        let mut callbacks = self.background_thread_callbacks.lock().await;
+        callbacks
+            .entry(thread_id.to_string())
+            .or_default()
+            .insert(consumer_id.to_string(), sender);
+    }
+
+    pub(crate) async fn unregister_background_callback(&self, thread_id: &str, consumer_id: &str) {
+        let mut callbacks = self.background_thread_callbacks.lock().await;
+        if let Some(consumers) = callbacks.get_mut(thread_id) {
+            consumers.remove(consumer_id);
+            if consumers.is_empty() {
+                callbacks.remove(thread_id);
+            }
+        }
+    }
+
+    pub(crate) async fn callbacks_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Vec<(String, mpsc::UnboundedSender<Value>)> {
+        let callbacks = self.background_thread_callbacks.lock().await;
+        callbacks
+            .get(thread_id)
+            .map(|consumers| {
+                consumers
+                    .iter()
+                    .map(|(id, sender)| (id.clone(), sender.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
 }
 
 pub(crate) fn build_codex_path_env(codex_bin: Option<&str>) -> Option<String> {
@@ -146,6 +224,13 @@ pub(crate) fn build_codex_path_env(codex_bin: Option<&str>) -> Option<String> {
     } else {
         Some(paths.join(":"))
     }
+}
+
+static BACKGROUND_CALLBACK_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn next_background_callback_id(prefix: &str) -> String {
+    let sequence = BACKGROUND_CALLBACK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{sequence}")
 }
 
 pub(crate) fn build_codex_command_with_bin(codex_bin: Option<String>) -> Command {
@@ -293,10 +378,27 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
                     // Check for background thread callback
                     let mut sent_to_background = false;
                     if let Some(ref tid) = thread_id {
-                        let callbacks = session_clone.background_thread_callbacks.lock().await;
-                        if let Some(tx) = callbacks.get(tid) {
-                            let _ = tx.send(value.clone());
+                        let subscribers = session_clone.callbacks_for_thread(tid).await;
+                        if !subscribers.is_empty() {
                             sent_to_background = true;
+                            let mut stale_consumers = Vec::<String>::new();
+                            for (consumer_id, tx) in subscribers {
+                                if tx.send(value.clone()).is_err() {
+                                    stale_consumers.push(consumer_id);
+                                }
+                            }
+                            if !stale_consumers.is_empty() {
+                                let mut callbacks =
+                                    session_clone.background_thread_callbacks.lock().await;
+                                if let Some(consumers) = callbacks.get_mut(tid) {
+                                    for consumer_id in stale_consumers {
+                                        consumers.remove(consumer_id.as_str());
+                                    }
+                                    if consumers.is_empty() {
+                                        callbacks.remove(tid);
+                                    }
+                                }
+                            }
                         }
                     }
                     // Don't emit to frontend if this is a background thread event
@@ -314,10 +416,27 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
                 // Check for background thread callback
                 let mut sent_to_background = false;
                 if let Some(ref tid) = thread_id {
-                    let callbacks = session_clone.background_thread_callbacks.lock().await;
-                    if let Some(tx) = callbacks.get(tid) {
-                        let _ = tx.send(value.clone());
+                    let subscribers = session_clone.callbacks_for_thread(tid).await;
+                    if !subscribers.is_empty() {
                         sent_to_background = true;
+                        let mut stale_consumers = Vec::<String>::new();
+                        for (consumer_id, tx) in subscribers {
+                            if tx.send(value.clone()).is_err() {
+                                stale_consumers.push(consumer_id);
+                            }
+                        }
+                        if !stale_consumers.is_empty() {
+                            let mut callbacks =
+                                session_clone.background_thread_callbacks.lock().await;
+                            if let Some(consumers) = callbacks.get_mut(tid) {
+                                for consumer_id in stale_consumers {
+                                    consumers.remove(consumer_id.as_str());
+                                }
+                                if consumers.is_empty() {
+                                    callbacks.remove(tid);
+                                }
+                            }
+                        }
                     }
                 }
                 // Don't emit to frontend if this is a background thread event
@@ -443,5 +562,65 @@ mod tests {
     fn extract_thread_id_returns_none_when_missing() {
         let value = json!({ "params": {} });
         assert_eq!(extract_thread_id(&value), None);
+    }
+
+    #[test]
+    fn extract_thread_id_reads_nested_item_payload() {
+        let value = json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "thread_id": "thread-nested"
+                }
+            }
+        });
+        assert_eq!(extract_thread_id(&value), Some("thread-nested".to_string()));
+    }
+
+    #[test]
+    fn extract_thread_id_reads_thread_object_id() {
+        let value = json!({
+            "method": "item/agentMessage",
+            "params": {
+                "thread": {
+                    "id": "thread-object"
+                }
+            }
+        });
+        assert_eq!(extract_thread_id(&value), Some("thread-object".to_string()));
+    }
+
+    #[test]
+    fn extract_thread_id_reads_conversation_id() {
+        let value = json!({
+            "method": "codex/event/item_completed",
+            "params": {
+                "conversationId": "thread-conversation",
+                "msg": {
+                    "turn_id": "3"
+                }
+            }
+        });
+        assert_eq!(
+            extract_thread_id(&value),
+            Some("thread-conversation".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_thread_id_reads_nested_params_msg_thread_id() {
+        let value = json!({
+            "method": "codex/event/item_started",
+            "params": {
+                "msg": {
+                    "thread_id": "thread-from-msg",
+                    "item": { "type": "UserMessage" }
+                }
+            }
+        });
+        assert_eq!(
+            extract_thread_id(&value),
+            Some("thread-from-msg".to_string())
+        );
     }
 }

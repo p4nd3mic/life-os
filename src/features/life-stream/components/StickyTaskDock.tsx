@@ -47,6 +47,10 @@ export function StickyTaskDock({ onJumpToSource, onReviewCandidates }: StickyTas
     [addTaskDockItem, draft],
   );
 
+  if (taskDock.hidden) {
+    return null;
+  }
+
   return (
     <section
       className={`life-sticky-task-dock${taskDock.collapsed ? " is-collapsed" : ""}`}

@@ -66,3 +66,9 @@
   background: rgba(255, 255, 255, 0.16);
   border-color: rgba(255, 255, 255, 0.3);
 }
+
+.life-stream-log-toggle.is-active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.44);
+  color: rgba(224, 242, 254, 0.98);
+}

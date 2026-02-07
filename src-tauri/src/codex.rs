@@ -14,7 +14,7 @@ use tokio::time::timeout;
 pub(crate) use crate::backend::app_server::WorkspaceSession;
 use crate::backend::app_server::{
     build_codex_command_with_bin, build_codex_path_env, check_codex_installation,
-    spawn_workspace_session as spawn_workspace_session_inner,
+    next_background_callback_id, spawn_workspace_session as spawn_workspace_session_inner,
 };
 use crate::codex_home::resolve_codex_home;
 use crate::codex_home::resolve_workspace_codex_home;
@@ -879,12 +879,12 @@ Changes:\n{diff}"
 
     // Create channel for receiving events
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+    let callback_consumer_id = next_background_callback_id("commit-message");
 
     // Register callback for this thread
-    {
-        let mut callbacks = session.background_thread_callbacks.lock().await;
-        callbacks.insert(thread_id.clone(), tx);
-    }
+    session
+        .register_background_callback(thread_id.as_str(), callback_consumer_id.as_str(), tx)
+        .await;
 
     // Start a turn with the commit message prompt
     let turn_params = build_turn_start_params(
@@ -903,10 +903,9 @@ Changes:\n{diff}"
         Ok(result) => result,
         Err(error) => {
             // Clean up if turn fails to start
-            {
-                let mut callbacks = session.background_thread_callbacks.lock().await;
-                callbacks.remove(&thread_id);
-            }
+            session
+                .unregister_background_callback(thread_id.as_str(), callback_consumer_id.as_str())
+                .await;
             let archive_params = json!({ "threadId": thread_id.as_str() });
             let _ = session.send_request("thread/archive", archive_params).await;
             return Err(error);
@@ -918,10 +917,9 @@ Changes:\n{diff}"
             .get("message")
             .and_then(|m| m.as_str())
             .unwrap_or("Unknown error starting turn");
-        {
-            let mut callbacks = session.background_thread_callbacks.lock().await;
-            callbacks.remove(&thread_id);
-        }
+        session
+            .unregister_background_callback(thread_id.as_str(), callback_consumer_id.as_str())
+            .await;
         let archive_params = json!({ "threadId": thread_id.as_str() });
         let _ = session.send_request("thread/archive", archive_params).await;
         return Err(error_msg.to_string());
@@ -966,10 +964,9 @@ Changes:\n{diff}"
     .await;
 
     // Unregister callback
-    {
-        let mut callbacks = session.background_thread_callbacks.lock().await;
-        callbacks.remove(&thread_id);
-    }
+    session
+        .unregister_background_callback(thread_id.as_str(), callback_consumer_id.as_str())
+        .await;
 
     // Archive the thread to clean up
     let archive_params = json!({ "threadId": thread_id });

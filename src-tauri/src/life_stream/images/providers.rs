@@ -45,8 +45,13 @@ impl CandidateProviderRegistry {
         // Stub adapter for future non-TMDB internet sources.
         // We keep it explicit so IMG-4.1 can slot in providers without touching ranking logic.
         output.extend(
-            self.fetch_web_stub(entity_type, entity_name, context_hint, limit.saturating_sub(output.len()))
-                .await,
+            self.fetch_web_stub(
+                entity_type,
+                entity_name,
+                context_hint,
+                limit.saturating_sub(output.len()),
+            )
+            .await,
         );
 
         if output.len() > limit {
@@ -62,10 +67,7 @@ impl CandidateProviderRegistry {
         context_hint: Option<&str>,
         limit: usize,
     ) -> Result<Vec<RemoteImageCandidate>, String> {
-        let supports_tmdb = matches!(
-            entity_type,
-            "media" | "anime" | "movie" | "show" | "tv"
-        );
+        let supports_tmdb = matches!(entity_type, "media" | "anime" | "movie" | "show" | "tv");
         if !supports_tmdb || limit == 0 {
             return Ok(Vec::new());
         }

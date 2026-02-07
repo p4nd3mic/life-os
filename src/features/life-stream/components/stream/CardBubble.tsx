@@ -85,6 +85,7 @@ export function CardBubble({
   const showCauseEffectLayout =
     renderLayoutMode === "cause_effect" && Boolean(card.causal);
   const isNativeGraphMode = showCauseEffectLayout;
+  const graphOrientation = "vertical";
   const causalCard = showCauseEffectLayout ? card.causal : undefined;
   const isDeliverySession = card.cardType === "delivery_session";
   const clarificationOptions = card.clarificationOptions ?? [];
@@ -390,12 +391,15 @@ export function CardBubble({
 
   if (isNativeGraphMode && causalCard) {
     return (
-      <section className={`life-graph-card state-${card.state} domain-${card.domain}`}>
+      <section
+        className={`life-graph-card life-graph-card--${graphOrientation} state-${card.state} domain-${card.domain}`}
+      >
         <CauseEffectCard
           cardId={card.id}
           cardType={card.cardType}
           cardTitle={card.title}
           causal={causalCard}
+          layoutOrientation={graphOrientation}
           onOpenTranscript={() => {
             setShowGraphTranscript((prev) => !prev);
           }}

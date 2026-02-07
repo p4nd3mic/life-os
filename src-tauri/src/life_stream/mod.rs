@@ -6,9 +6,9 @@ mod images;
 mod mcp_bridge;
 mod obsidian;
 mod service;
-mod task_dock;
 #[cfg(test)]
 mod service_test;
+mod task_dock;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -16,9 +16,9 @@ mod types;
 pub use service::LifeStreamService;
 pub use types::*;
 
+use chrono::Local;
 use serde_json::json;
 use tauri::{AppHandle, State};
-use chrono::Local;
 
 use crate::remote_backend;
 use crate::state::AppState;
@@ -387,6 +387,128 @@ pub async fn life_stream_regenerate_semantics(
             card_ids,
             force_llm,
             persist,
+            workspace_session,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn life_stream_day_thread_debug(
+    workspace_id: String,
+    date_iso: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<DayThreadDebugSummary, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "life_stream_day_thread_debug",
+            json!({
+                "workspaceId": workspace_id,
+                "dateIso": date_iso,
+            }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|error| error.to_string());
+    }
+
+    let (workspace_path, obsidian_root) = {
+        let workspaces = state.workspaces.lock().await;
+        let entry = workspaces.get(&workspace_id).ok_or("workspace not found")?;
+        (entry.path.clone(), entry.settings.obsidian_root.clone())
+    };
+
+    let life_stream = state.life_stream_service.lock().await;
+    life_stream
+        .day_thread_debug_summary(&workspace_path, obsidian_root.as_deref(), date_iso.as_str())
+        .await
+}
+
+#[tauri::command]
+pub async fn life_stream_auth_health(
+    workspace_id: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<LifeStreamAuthHealth, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "life_stream_auth_health",
+            json!({
+                "workspaceId": workspace_id,
+            }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|error| error.to_string());
+    }
+
+    let workspace_path = {
+        let workspaces = state.workspaces.lock().await;
+        let entry = workspaces.get(&workspace_id).ok_or("workspace not found")?;
+        entry.path.clone()
+    };
+    let workspace_session = {
+        let sessions = state.sessions.lock().await;
+        sessions.get(&workspace_id).cloned()
+    };
+
+    let life_stream = state.life_stream_service.lock().await;
+    Ok(life_stream
+        .auth_health_check(&workspace_path, workspace_session)
+        .await)
+}
+
+#[tauri::command]
+pub async fn life_stream_day_thread_reset_and_rebuild(
+    workspace_id: String,
+    date_iso: String,
+    persist: Option<bool>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<SemanticRegenerationResult, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "life_stream_day_thread_reset_and_rebuild",
+            json!({
+                "workspaceId": workspace_id,
+                "dateIso": date_iso,
+                "persist": persist,
+            }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|error| error.to_string());
+    }
+
+    let (workspace_path, obsidian_root) = {
+        let workspaces = state.workspaces.lock().await;
+        let entry = workspaces.get(&workspace_id).ok_or("workspace not found")?;
+        (entry.path.clone(), entry.settings.obsidian_root.clone())
+    };
+
+    let workspace_session = {
+        let sessions = state.sessions.lock().await;
+        sessions.get(&workspace_id).cloned()
+    };
+
+    let life_stream = state.life_stream_service.lock().await;
+    life_stream
+        .reset_day_thread_state(&workspace_path, obsidian_root.as_deref(), date_iso.as_str())
+        .await?;
+    let cards = life_stream
+        .load_day(&workspace_path, obsidian_root.as_deref(), date_iso.as_str())
+        .await?;
+    let card_ids = cards.into_iter().map(|card| card.id).collect::<Vec<_>>();
+    life_stream
+        .regenerate_semantics_for_cards(
+            &workspace_path,
+            obsidian_root.as_deref(),
+            card_ids,
+            true,
+            persist.unwrap_or(true),
             workspace_session,
         )
         .await

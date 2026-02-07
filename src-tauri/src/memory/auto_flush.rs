@@ -1,4 +1,4 @@
-use crate::backend::app_server::WorkspaceSession;
+use crate::backend::app_server::{next_background_callback_id, WorkspaceSession};
 use crate::memory::MemoryService;
 use crate::types::AutoMemorySettings;
 use crate::utils::{git_env_path, resolve_git_binary};
@@ -304,10 +304,10 @@ pub async fn run_memory_flush_summarizer(
         .to_string();
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
-    {
-        let mut callbacks = session.background_thread_callbacks.lock().await;
-        callbacks.insert(thread_id.clone(), tx);
-    }
+    let callback_consumer_id = next_background_callback_id("memory-flush");
+    session
+        .register_background_callback(thread_id.as_str(), callback_consumer_id.as_str(), tx)
+        .await;
 
     let turn_params = json!({
         "threadId": thread_id,
@@ -320,8 +320,9 @@ pub async fn run_memory_flush_summarizer(
     let turn_result = match turn_result {
         Ok(result) => result,
         Err(error) => {
-            let mut callbacks = session.background_thread_callbacks.lock().await;
-            callbacks.remove(&thread_id);
+            session
+                .unregister_background_callback(thread_id.as_str(), callback_consumer_id.as_str())
+                .await;
             let archive_params = json!({ "threadId": thread_id.as_str() });
             let _ = session.send_request("thread/archive", archive_params).await;
             return Err(error);
@@ -333,8 +334,9 @@ pub async fn run_memory_flush_summarizer(
             .get("message")
             .and_then(|m| m.as_str())
             .unwrap_or("Unknown error starting turn");
-        let mut callbacks = session.background_thread_callbacks.lock().await;
-        callbacks.remove(&thread_id);
+        session
+            .unregister_background_callback(thread_id.as_str(), callback_consumer_id.as_str())
+            .await;
         let archive_params = json!({ "threadId": thread_id.as_str() });
         let _ = session.send_request("thread/archive", archive_params).await;
         return Err(error_msg.to_string());
@@ -370,10 +372,9 @@ pub async fn run_memory_flush_summarizer(
     })
     .await;
 
-    {
-        let mut callbacks = session.background_thread_callbacks.lock().await;
-        callbacks.remove(&thread_id);
-    }
+    session
+        .unregister_background_callback(thread_id.as_str(), callback_consumer_id.as_str())
+        .await;
     let archive_params = json!({ "threadId": thread_id.as_str() });
     let _ = session.send_request("thread/archive", archive_params).await;
 

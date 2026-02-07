@@ -3,15 +3,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Local, NaiveDate};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::Emitter;
+use tokio::fs;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::time::timeout;
 
-use crate::backend::app_server::WorkspaceSession;
-use crate::codex_params::build_turn_start_params;
 use super::handlers::code_task::CodeTaskHandler;
 use super::handlers::delivery::DeliveryHandler;
 use super::handlers::media::MediaHandler;
@@ -23,14 +24,18 @@ use super::image_catalog::{
     upsert_context_override, upsert_entity_asset,
 };
 use super::image_manual::{
-    absolute_from_relative, find_image_candidates, import_image_asset, promote_entity_from_source_path,
-    resolve_entity_for_card,
-    sync_entity_file_image, EntityFileSyncOptions, ResolvedEntity,
+    absolute_from_relative, find_image_candidates, import_image_asset,
+    promote_entity_from_source_path, resolve_entity_for_card, sync_entity_file_image,
+    EntityFileSyncOptions, ResolvedEntity,
 };
 use super::images::ImageService;
 use super::mcp_bridge::LifeMcpBridge;
-use super::obsidian::ObsidianIO;
+use super::obsidian::{
+    DayThreadRuntimeState, ObsidianIO, SemanticRewriteLogAttempt, SemanticRewriteLogEntry,
+};
 use super::types::*;
+use crate::backend::app_server::{next_background_callback_id, WorkspaceSession};
+use crate::codex_params::build_turn_start_params;
 
 pub struct LifeStreamService {
     cards: Arc<Mutex<HashMap<String, StreamCard>>>,
@@ -355,6 +360,23 @@ impl LifeStreamService {
         let mut skipped = 0usize;
         let mut failed = 0usize;
         let mut errors = Vec::new();
+        let mut day_threads: HashMap<String, SemanticDayThread> = HashMap::new();
+        let mut llm_log_failures = 0usize;
+        let mut llm_log_writes = 0usize;
+
+        let cards_snapshot = {
+            let cards_guard = self.cards.lock().await;
+            cards_guard.values().cloned().collect::<Vec<_>>()
+        };
+        let mut cards_by_day: HashMap<String, Vec<StreamCard>> = HashMap::new();
+        for snapshot_card in cards_snapshot {
+            if let Some(date_iso) = card_date_iso(snapshot_card.occurred_at.as_str()) {
+                cards_by_day
+                    .entry(date_iso)
+                    .or_default()
+                    .push(snapshot_card);
+            }
+        }
 
         for card_id in card_ids {
             let existing = {
@@ -415,21 +437,167 @@ impl LifeStreamService {
 
             let output_text = card_output_text(&card);
             if force_llm {
-                match rewrite_semantics_with_codex(
-                    workspace_session.clone(),
+                let Some(session) = workspace_session.clone() else {
+                    failed += 1;
+                    errors.push(format!("{card_id}: workspace session unavailable"));
+                    continue;
+                };
+
+                let card_date = card_date_iso(card.occurred_at.as_str())
+                    .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+                if !day_threads.contains_key(card_date.as_str()) {
+                    let day_cards = cards_by_day
+                        .get(card_date.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| vec![card.clone()]);
+                    let day_thread = match ensure_semantic_day_thread(
+                        session.clone(),
+                        workspace_path,
+                        obsidian_root,
+                        &self.obsidian,
+                        card_date.as_str(),
+                        &day_cards,
+                        false,
+                    )
+                    .await
+                    {
+                        Ok(value) => value,
+                        Err(error) => {
+                            failed += 1;
+                            errors.push(format!("{card_id}: {error}"));
+                            continue;
+                        }
+                    };
+                    day_threads.insert(card_date.clone(), day_thread);
+                }
+
+                let Some(day_thread) = day_threads.get(card_date.as_str()).cloned() else {
+                    failed += 1;
+                    errors.push(format!(
+                        "{card_id}: unable to resolve day thread for {}",
+                        card_date
+                    ));
+                    continue;
+                };
+
+                let mut rewrite_result = rewrite_semantics_with_codex(
+                    session.clone(),
                     workspace_path,
+                    day_thread.thread_id.as_str(),
                     &card,
                     input_text.as_str(),
                     output_text.as_deref(),
                 )
-                .await
-                {
+                .await;
+
+                if let Err(failure) = &rewrite_result {
+                    let normalized_error = failure.error.to_lowercase();
+                    let should_refresh_thread = normalized_error.contains("echoed prompt input")
+                        || normalized_error.contains("returned empty output")
+                        || normalized_error.contains("timed out waiting");
+                    if should_refresh_thread {
+                        let day_cards = cards_by_day
+                            .get(card_date.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| vec![card.clone()]);
+                        if let Ok(fresh_day_thread) = ensure_semantic_day_thread(
+                            session.clone(),
+                            workspace_path,
+                            obsidian_root,
+                            &self.obsidian,
+                            card_date.as_str(),
+                            &day_cards,
+                            true,
+                        )
+                        .await
+                        {
+                            day_threads.insert(card_date.clone(), fresh_day_thread.clone());
+                            rewrite_result = rewrite_semantics_with_codex(
+                                session.clone(),
+                                workspace_path,
+                                fresh_day_thread.thread_id.as_str(),
+                                &card,
+                                input_text.as_str(),
+                                output_text.as_deref(),
+                            )
+                            .await;
+                        }
+                    }
+                }
+
+                match rewrite_result {
                     Ok(rewritten) => {
-                        rebuilt = rewritten;
+                        rebuilt = rewritten.causal;
+                        if let Err(log_error) = self
+                            .obsidian
+                            .write_semantic_rewrite_log(
+                                workspace_path,
+                                obsidian_root,
+                                rewritten.log.date.as_str(),
+                                card.id.as_str(),
+                                &SemanticRewriteLogEntry {
+                                    card_id: rewritten.log.card_id.clone(),
+                                    date: rewritten.log.date.clone(),
+                                    thread_id: rewritten.log.thread_id.clone(),
+                                    prompt: rewritten.log.prompt.clone(),
+                                    raw_response: rewritten.log.raw_response.clone(),
+                                    parsed_json: rewritten.log.parsed_json.clone(),
+                                    failure_reason: rewritten.log.failure_reason.clone(),
+                                    started_at: rewritten.log.started_at.clone(),
+                                    completed_at: rewritten.log.completed_at.clone(),
+                                    attempts: to_semantic_log_attempts(&rewritten.log.attempts),
+                                    trace_stats: rewritten.log.trace_stats.clone(),
+                                },
+                            )
+                            .await
+                        {
+                            llm_log_failures += 1;
+                            errors.push(format!(
+                                "{card_id}: failed to write semantic rewrite log: {}",
+                                log_error
+                            ));
+                        } else {
+                            llm_log_writes += 1;
+                        }
                     }
                     Err(error) => {
+                        let failure_log = error.log;
+                        let write_result = self
+                            .obsidian
+                            .write_semantic_rewrite_log(
+                                workspace_path,
+                                obsidian_root,
+                                failure_log.date.as_str(),
+                                card.id.as_str(),
+                                &SemanticRewriteLogEntry {
+                                    card_id: failure_log.card_id.clone(),
+                                    date: failure_log.date.clone(),
+                                    thread_id: failure_log.thread_id.clone(),
+                                    prompt: failure_log.prompt.clone(),
+                                    raw_response: failure_log.raw_response.clone(),
+                                    parsed_json: failure_log.parsed_json.clone(),
+                                    failure_reason: failure_log
+                                        .failure_reason
+                                        .clone()
+                                        .or(Some(error.error.clone())),
+                                    started_at: failure_log.started_at.clone(),
+                                    completed_at: failure_log.completed_at.clone(),
+                                    attempts: to_semantic_log_attempts(&failure_log.attempts),
+                                    trace_stats: failure_log.trace_stats.clone(),
+                                },
+                            )
+                            .await;
+                        if let Err(log_error) = write_result {
+                            llm_log_failures += 1;
+                            errors.push(format!(
+                                "{card_id}: failed to write semantic rewrite log: {}",
+                                log_error
+                            ));
+                        } else {
+                            llm_log_writes += 1;
+                        }
                         failed += 1;
-                        errors.push(format!("{card_id}: {error}"));
+                        errors.push(format!("{card_id}: {}", error.error));
                         continue;
                     }
                 }
@@ -477,12 +645,239 @@ impl LifeStreamService {
             }
         }
 
+        let llm_log_status = if !force_llm {
+            None
+        } else if llm_log_failures > 0 {
+            Some("failed".to_string())
+        } else if llm_log_writes > 0 {
+            Some("success".to_string())
+        } else {
+            Some("failed".to_string())
+        };
+
         Ok(SemanticRegenerationResult {
             updated,
             skipped,
             failed,
             errors,
+            llm_log_status,
         })
+    }
+
+    pub async fn day_thread_debug_summary(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        date_iso: &str,
+    ) -> Result<DayThreadDebugSummary, String> {
+        NaiveDate::parse_from_str(date_iso, "%Y-%m-%d")
+            .map_err(|error| format!("Invalid date {date_iso}: {error}"))?;
+        let runtime_state = self
+            .obsidian
+            .read_day_thread_runtime_state(workspace_path, obsidian_root, date_iso)
+            .await
+            .map_err(|error| error.to_string())?;
+        let root = self
+            .obsidian
+            .resolve_root_path(workspace_path, obsidian_root)
+            .map_err(|error| error.to_string())?;
+        let log_directory = root.join("Runtime").join("semantic-rewrite").join(date_iso);
+        let log_directory_label = log_directory.to_string_lossy().to_string();
+        let mut log_items = Vec::<DayThreadDebugLogItem>::new();
+
+        if log_directory.exists() {
+            let mut entries = fs::read_dir(&log_directory).await.map_err(|error| {
+                format!(
+                    "Failed reading log directory {}: {}",
+                    log_directory.display(),
+                    error
+                )
+            })?;
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|error| format!("Failed reading log directory entry: {error}"))?
+            {
+                let path = entry.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                    continue;
+                }
+                let content = match fs::read_to_string(&path).await {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                let Ok(payload) = serde_json::from_str::<SemanticRewriteLogEntry>(&content) else {
+                    continue;
+                };
+                let latest_attempt = payload.attempts.last();
+                let attempt_prompt = latest_attempt
+                    .map(|attempt| attempt.prompt.as_str())
+                    .unwrap_or(payload.prompt.as_str());
+                let attempt_raw = latest_attempt
+                    .map(|attempt| attempt.raw_response.as_str())
+                    .unwrap_or(payload.raw_response.as_str());
+                let prompt_echo_detected = looks_like_prompt_echo(attempt_raw, attempt_prompt);
+                let preview = sanitize_semantic_text(attempt_raw, 160);
+                let trace_stats = latest_attempt
+                    .and_then(|attempt| attempt.trace_stats.clone())
+                    .or_else(|| payload.trace_stats.clone());
+                let event_trace_preview = latest_attempt
+                    .map(|attempt| {
+                        attempt
+                            .event_trace
+                            .iter()
+                            .rev()
+                            .take(8)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let failure_reason = payload
+                    .failure_reason
+                    .clone()
+                    .or_else(|| latest_attempt.and_then(|attempt| attempt.failure_reason.clone()));
+
+                log_items.push(DayThreadDebugLogItem {
+                    card_id: payload.card_id,
+                    thread_id: Some(payload.thread_id),
+                    started_at: Some(payload.started_at),
+                    completed_at: Some(payload.completed_at),
+                    failure_reason,
+                    prompt_echo_detected,
+                    raw_response_preview: preview,
+                    trace_stats,
+                    event_trace_preview,
+                });
+            }
+        }
+
+        log_items.sort_by(|a, b| {
+            b.started_at
+                .cmp(&a.started_at)
+                .then_with(|| b.card_id.cmp(&a.card_id))
+        });
+
+        let total_logs = log_items.len();
+        let failed_logs = log_items
+            .iter()
+            .filter(|item| item.failure_reason.is_some())
+            .count();
+        let successful_logs = total_logs.saturating_sub(failed_logs);
+        let last_failure_reason = log_items
+            .iter()
+            .find_map(|item| item.failure_reason.clone());
+        let last_failure_card_id = log_items
+            .iter()
+            .find(|item| item.failure_reason.is_some())
+            .map(|item| item.card_id.clone());
+
+        Ok(DayThreadDebugSummary {
+            date: date_iso.to_string(),
+            thread_id: runtime_state.as_ref().map(|value| value.thread_id.clone()),
+            last_seed_hash: runtime_state
+                .as_ref()
+                .and_then(|value| value.last_seed_hash.clone()),
+            card_count: runtime_state.as_ref().map(|value| value.card_count),
+            updated_at: runtime_state.as_ref().map(|value| value.updated_at.clone()),
+            log_directory: log_directory_label,
+            total_logs,
+            failed_logs,
+            successful_logs,
+            last_failure_reason,
+            last_failure_card_id,
+            recent_logs: log_items.into_iter().take(20).collect::<Vec<_>>(),
+        })
+    }
+
+    pub async fn reset_day_thread_state(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        date_iso: &str,
+    ) -> Result<(), String> {
+        NaiveDate::parse_from_str(date_iso, "%Y-%m-%d")
+            .map_err(|error| format!("Invalid date {date_iso}: {error}"))?;
+        self.obsidian
+            .delete_day_thread_runtime_state(workspace_path, obsidian_root, date_iso)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn auth_health_check(
+        &self,
+        workspace_path: &str,
+        workspace_session: Option<Arc<WorkspaceSession>>,
+    ) -> LifeStreamAuthHealth {
+        let checked_at = chrono::Utc::now().to_rfc3339();
+        let Some(session) = workspace_session else {
+            return LifeStreamAuthHealth {
+                state: "unknown".to_string(),
+                message: "Codex workspace session unavailable".to_string(),
+                checked_at,
+            };
+        };
+
+        let thread_id =
+            match start_semantic_rewrite_day_thread(session.clone(), workspace_path).await {
+                Ok(thread_id) => thread_id,
+                Err(error) => {
+                    let state = if semantic_auth_error_marker(error.as_str()) {
+                        "unauthorized"
+                    } else {
+                        "error"
+                    };
+                    return LifeStreamAuthHealth {
+                        state: state.to_string(),
+                        message: error,
+                        checked_at,
+                    };
+                }
+            };
+
+        let prompt = "Reply with exactly AUTH_OK";
+        let turn_result =
+            run_codex_semantic_turn(session.clone(), workspace_path, thread_id.as_str(), prompt)
+                .await;
+        let _ = session
+            .send_request("thread/archive", json!({ "threadId": thread_id }))
+            .await;
+
+        match turn_result {
+            Ok(output) => {
+                let state = if output.output.contains("AUTH_OK") {
+                    "healthy"
+                } else {
+                    "unknown"
+                };
+                let message = if state == "healthy" {
+                    "Codex auth healthy".to_string()
+                } else {
+                    "Auth probe completed but returned unexpected output".to_string()
+                };
+                LifeStreamAuthHealth {
+                    state: state.to_string(),
+                    message,
+                    checked_at,
+                }
+            }
+            Err(error) => {
+                let detail = error
+                    .trace_stats
+                    .first_error_message
+                    .clone()
+                    .unwrap_or(error.error.clone());
+                let state = if semantic_auth_error_marker(detail.as_str()) {
+                    "unauthorized"
+                } else {
+                    "error"
+                };
+                LifeStreamAuthHealth {
+                    state: state.to_string(),
+                    message: detail,
+                    checked_at,
+                }
+            }
+        }
     }
 
     pub async fn image_candidates(
@@ -801,7 +1196,10 @@ impl LifeStreamService {
                             card.id,
                             target_node_id.as_deref().unwrap_or("card")
                         ),
-                        text: format!("Review image candidates for {}", promoted_entity.entity_name),
+                        text: format!(
+                            "Review image candidates for {}",
+                            promoted_entity.entity_name
+                        ),
                         kind: TaskDockItemKind::Reminder,
                         completed: false,
                         created_at: chrono::Utc::now().to_rfc3339(),
@@ -810,11 +1208,14 @@ impl LifeStreamService {
                         source_card_id: Some(card.id.clone()),
                         source_node_id: target_node_id.clone(),
                     };
-                    if let Err(error) = super::task_dock::upsert_task_dock_item_at_root(&root, task).await {
+                    if let Err(error) =
+                        super::task_dock::upsert_task_dock_item_at_root(&root, task).await
+                    {
                         summary.failed += 1;
-                        summary
-                            .errors
-                            .push(format!("{}: failed to queue review task: {}", card.id, error));
+                        summary.errors.push(format!(
+                            "{}: failed to queue review task: {}",
+                            card.id, error
+                        ));
                     } else {
                         summary.reviewed += 1;
                     }
@@ -1319,6 +1720,76 @@ struct LlmSemanticNodePayload {
     bullets: Vec<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SemanticRewriteAttemptTrace {
+    stage: String,
+    prompt: String,
+    raw_response: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parsed_json: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_reason: Option<String>,
+    #[serde(default, rename = "eventTrace")]
+    event_trace: Vec<SemanticEventTraceEntry>,
+    #[serde(default, rename = "traceStats")]
+    trace_stats: Option<SemanticAttemptTraceStats>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SemanticRewriteRunLog {
+    card_id: String,
+    date: String,
+    thread_id: String,
+    prompt: String,
+    raw_response: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parsed_json: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_reason: Option<String>,
+    started_at: String,
+    completed_at: String,
+    attempts: Vec<SemanticRewriteAttemptTrace>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "traceStats")]
+    trace_stats: Option<SemanticAttemptTraceStats>,
+}
+
+#[derive(Debug)]
+struct SemanticRewriteRunSuccess {
+    causal: CausalCardContent,
+    log: SemanticRewriteRunLog,
+}
+
+#[derive(Debug)]
+struct SemanticRewriteRunFailure {
+    error: String,
+    log: SemanticRewriteRunLog,
+}
+
+#[derive(Debug, Clone)]
+struct SemanticDayThread {
+    thread_id: String,
+}
+
+#[derive(Debug)]
+struct SemanticTurnOutput {
+    output: String,
+    event_trace: Vec<SemanticEventTraceEntry>,
+    trace_stats: SemanticAttemptTraceStats,
+}
+
+#[derive(Debug)]
+struct SemanticTurnFailure {
+    error: String,
+    output: String,
+    event_trace: Vec<SemanticEventTraceEntry>,
+    trace_stats: SemanticAttemptTraceStats,
+}
+
+const SEMANTIC_EVENT_TRACE_LIMIT: usize = 400;
+const SEMANTIC_TRACE_PREVIEW_LIMIT: usize = 300;
+
 fn sanitize_semantic_text(value: &str, max_chars: usize) -> Option<String> {
     let cleaned = value
         .trim()
@@ -1345,10 +1816,16 @@ fn truncate_text_to_chars(value: &str, max_chars: usize) -> String {
 
 fn strip_json_fence(value: &str) -> &str {
     let trimmed = value.trim();
-    if let Some(fenced) = trimmed.strip_prefix("```json").and_then(|v| v.strip_suffix("```")) {
+    if let Some(fenced) = trimmed
+        .strip_prefix("```json")
+        .and_then(|v| v.strip_suffix("```"))
+    {
         return fenced.trim();
     }
-    if let Some(fenced) = trimmed.strip_prefix("```").and_then(|v| v.strip_suffix("```")) {
+    if let Some(fenced) = trimmed
+        .strip_prefix("```")
+        .and_then(|v| v.strip_suffix("```"))
+    {
         return fenced.trim();
     }
     trimmed
@@ -1429,6 +1906,190 @@ fn card_output_text(card: &StreamCard) -> Option<String> {
         })
 }
 
+fn card_date_iso(occurred_at: &str) -> Option<String> {
+    DateTime::parse_from_rfc3339(occurred_at)
+        .map(|value| value.naive_local().date().format("%Y-%m-%d").to_string())
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(occurred_at, "%Y-%m-%dT%H:%M:%S%z")
+                .map(|value| value.date().format("%Y-%m-%d").to_string())
+        })
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(occurred_at, "%Y-%m-%dT%H:%M:%S%.f%z")
+                .map(|value| value.date().format("%Y-%m-%d").to_string())
+        })
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(occurred_at, "%Y-%m-%dT%H:%M:%S")
+                .map(|value| value.date().format("%Y-%m-%d").to_string())
+        })
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(occurred_at, "%Y-%m-%dT%H:%M:%S%.f")
+                .map(|value| value.date().format("%Y-%m-%d").to_string())
+        })
+        .ok()
+}
+
+fn card_time_label(occurred_at: &str) -> String {
+    DateTime::parse_from_rfc3339(occurred_at)
+        .map(|value| value.naive_local().format("%-I:%M %p").to_string())
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(occurred_at, "%Y-%m-%dT%H:%M:%S%z")
+                .map(|value| value.format("%-I:%M %p").to_string())
+        })
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(occurred_at, "%Y-%m-%dT%H:%M:%S%.f%z")
+                .map(|value| value.format("%-I:%M %p").to_string())
+        })
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(occurred_at, "%Y-%m-%dT%H:%M:%S")
+                .map(|value| value.format("%-I:%M %p").to_string())
+        })
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(occurred_at, "%Y-%m-%dT%H:%M:%S%.f")
+                .map(|value| value.format("%-I:%M %p").to_string())
+        })
+        .unwrap_or_else(|_| "Unknown time".to_string())
+}
+
+fn summarize_card_for_day_seed(card: &StreamCard) -> String {
+    let input_text = card
+        .original_input
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            card.expanded
+                .as_ref()
+                .and_then(|expanded| expanded.original_input.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| card.title.clone());
+    let output_summary =
+        card_output_text(card).unwrap_or_else(|| card.summary.clone().unwrap_or_default());
+    let input_compact = truncate_text_to_chars(input_text.trim(), 320);
+    let output_compact = truncate_text_to_chars(output_summary.trim(), 420);
+    format!(
+        "[Card {}]\nTime: {}\nTitle: {}\nInput: {}\nOutput summary: {}",
+        card.id,
+        card_time_label(card.occurred_at.as_str()),
+        truncate_text_to_chars(card.title.trim(), 180),
+        input_compact,
+        if output_compact.is_empty() {
+            "(none)".to_string()
+        } else {
+            output_compact
+        }
+    )
+}
+
+fn build_day_context_seed_prompt(date_iso: &str, cards: &[StreamCard], seed_hash: &str) -> String {
+    let mut sorted_cards = cards.to_vec();
+    sorted_cards.sort_by(|a, b| a.occurred_at.cmp(&b.occurred_at).then(a.id.cmp(&b.id)));
+    let card_lines = sorted_cards
+        .iter()
+        .map(summarize_card_for_day_seed)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    format!(
+        r#"You are maintaining shared day context for Life Stream date {}.
+
+Store this context silently and use it for future rewrites on the same thread.
+Do not rewrite cards in this step. Do not produce schema examples.
+
+Context hash: {}
+Card count: {}
+
+Day cards:
+{}
+
+Reply with exactly: CONTEXT_SEEDED
+"#,
+        date_iso,
+        seed_hash,
+        cards.len(),
+        card_lines
+    )
+}
+
+fn compute_day_seed_hash(cards: &[StreamCard]) -> String {
+    let mut fingerprint_rows = cards
+        .iter()
+        .map(|card| format!("{}|{}", card.id, card.updated_at))
+        .collect::<Vec<_>>();
+    fingerprint_rows.sort();
+
+    let mut hasher = Sha256::new();
+    for row in fingerprint_rows {
+        hasher.update(row.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn parse_json_value_from_response(text: &str) -> Option<Value> {
+    let json_candidate = extract_json_object(text)?;
+    serde_json::from_str::<Value>(&json_candidate).ok()
+}
+
+const REWRITE_PLACEHOLDER_PATTERNS: [&str; 6] = [
+    "short title",
+    "standalone thought",
+    "optional one-liner",
+    "2-5 concise bullets",
+    "schema",
+    "example",
+];
+
+fn find_placeholder_pattern(value: &str) -> Option<&'static str> {
+    let normalized = value.trim().to_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    REWRITE_PLACEHOLDER_PATTERNS
+        .iter()
+        .copied()
+        .find(|pattern| normalized.contains(pattern))
+}
+
+fn payload_placeholder_violation(payload: &LlmSemanticRewritePayload) -> Option<String> {
+    if let Some(left) = &payload.left {
+        if let Some(pattern) = find_placeholder_pattern(left.headline.as_str()) {
+            return Some(format!("left.headline contains '{pattern}'"));
+        }
+        if let Some(summary_line) = left.summary_line.as_deref() {
+            if let Some(pattern) = find_placeholder_pattern(summary_line) {
+                return Some(format!("left.summaryLine contains '{pattern}'"));
+            }
+        }
+        for bullet in &left.bullets {
+            if let Some(pattern) = find_placeholder_pattern(bullet.as_str()) {
+                return Some(format!("left.bullets contains '{pattern}'"));
+            }
+        }
+    }
+
+    for (index, node) in payload.right.iter().enumerate() {
+        if let Some(pattern) = find_placeholder_pattern(node.headline.as_str()) {
+            return Some(format!("right[{index}].headline contains '{pattern}'"));
+        }
+        if let Some(summary_line) = node.summary_line.as_deref() {
+            if let Some(pattern) = find_placeholder_pattern(summary_line) {
+                return Some(format!("right[{index}].summaryLine contains '{pattern}'"));
+            }
+        }
+        for bullet in &node.bullets {
+            if let Some(pattern) = find_placeholder_pattern(bullet.as_str()) {
+                return Some(format!("right[{index}].bullets contains '{pattern}'"));
+            }
+        }
+    }
+
+    None
+}
+
 fn semantic_rewrite_prompt(
     card: &StreamCard,
     input_text: &str,
@@ -1436,7 +2097,8 @@ fn semantic_rewrite_prompt(
 ) -> String {
     let output = output_text.unwrap_or("");
     format!(
-        r#"Rewrite this Life Stream item into concise semantic graph nodes.
+        r#"You already have the day context for this date.
+Rewrite ONLY Card {} below into concise semantic graph nodes.
 
 Return JSON only, no markdown fences.
 Schema:
@@ -1460,6 +2122,7 @@ Rules:
 - Keep right nodes standalone and complete (no trailing colon fragments).
 - Remove duplicate/near-duplicate nodes.
 - Strip assistant boilerplate and greetings.
+- Rewrite only this card, but use the day context for coherence.
 - Prefer quality and coherence over speed.
 - Include concrete details in bullets.
 - Never echo system status messages, test acknowledgements, or speaker names.
@@ -1476,6 +2139,7 @@ input:
 output:
 {}
 "#,
+        card.id,
         format!("{:?}", card.card_type).to_lowercase(),
         card.title,
         input_text.trim(),
@@ -1509,7 +2173,8 @@ fn semantic_rewrite_retry_prompt(
     };
 
     format!(
-        r#"The previous semantic rewrite had low quality. Rewrite again with higher precision.
+        r#"You already have the day context for this date.
+The previous semantic rewrite for Card {} had low quality. Rewrite ONLY this card again with higher precision.
 
 Return STRICT JSON only (no prose, no markdown fences) using this schema:
 {{
@@ -1532,6 +2197,7 @@ Critical constraints:
 - Do NOT output fragments ending with ":".
 - Do NOT include greetings, status checks, usernames, or assistant chatter.
 - Do NOT duplicate the same point across nodes.
+- Do NOT emit placeholder/template words like "short title", "optional one-liner", or "example".
 - Each right headline must be meaningful alone.
 - Prefer fewer, stronger nodes over noisy nodes.
 - Keep right node count <= 7.
@@ -1548,6 +2214,7 @@ input:
 output:
 {}
 "#,
+        card.id,
         previous,
         format!("{:?}", card.card_type).to_lowercase(),
         card.title,
@@ -1645,7 +2312,9 @@ fn normalize_llm_right_nodes(
                 );
             }
         }
-        if is_weak_semantic_fragment(headline.as_str()) || is_meta_boilerplate_headline(headline.as_str()) {
+        if is_weak_semantic_fragment(headline.as_str())
+            || is_meta_boilerplate_headline(headline.as_str())
+        {
             continue;
         }
 
@@ -1674,7 +2343,9 @@ fn normalize_llm_right_nodes(
             .summary_line
             .as_deref()
             .and_then(|value| sanitize_semantic_text(value, 180))
-            .filter(|summary| semantic_headline_key(summary.as_str()) != semantic_headline_key(headline.as_str()));
+            .filter(|summary| {
+                semantic_headline_key(summary.as_str()) != semantic_headline_key(headline.as_str())
+            });
 
         let text = if bullets.is_empty() {
             headline.clone()
@@ -1736,15 +2407,6 @@ fn llm_nodes_need_retry(nodes: &[CausalNode]) -> bool {
     meta > 0 || weak > 0 || duplicate > 0
 }
 
-async fn rewrite_semantics_with_codex_attempt(
-    session: Arc<WorkspaceSession>,
-    workspace_path: &str,
-    prompt: String,
-) -> Result<LlmSemanticRewritePayload, String> {
-    let raw = run_codex_semantic_rewrite(session, workspace_path, prompt).await?;
-    parse_llm_semantic_payload(raw.as_str())
-}
-
 fn extract_thread_id_from_response(response: &Value) -> Option<String> {
     response
         .get("result")
@@ -1762,54 +2424,17 @@ fn extract_thread_id_from_response(response: &Value) -> Option<String> {
 }
 
 fn extract_delta_text(event: &Value) -> Option<String> {
-    event
-        .get("params")
-        .and_then(|params| params.get("delta"))
-        .and_then(|delta| delta.as_str())
-        .map(|delta| delta.to_string())
-}
-
-fn extract_message_text_from_event(event: &Value) -> Option<String> {
-    fn collect(value: &Value, output: &mut Vec<String>) {
-        match value {
-            Value::String(text) => {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    output.push(trimmed.to_string());
-                }
-            }
-            Value::Array(items) => {
-                for item in items {
-                    collect(item, output);
-                }
-            }
-            Value::Object(map) => {
-                if let Some(text) = map.get("text").and_then(|value| value.as_str()) {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        output.push(trimmed.to_string());
-                    }
-                }
-                if let Some(value) = map.get("content") {
-                    collect(value, output);
-                }
-                if let Some(value) = map.get("output") {
-                    collect(value, output);
-                }
-                if let Some(value) = map.get("message") {
-                    collect(value, output);
-                }
-                if let Some(value) = map.get("item") {
-                    collect(value, output);
-                }
-            }
-            _ => {}
-        }
-    }
-
     let params = event.get("params")?;
+    let delta = params
+        .get("delta")
+        .or_else(|| params.get("msg").and_then(|msg| msg.get("delta")))
+        .or_else(|| params.get("msg").and_then(|msg| msg.get("content")))
+        .or_else(|| params.get("msg").and_then(|msg| msg.get("text")))?;
+    if let Some(text) = delta.as_str() {
+        return Some(text.to_string());
+    }
     let mut chunks = Vec::new();
-    collect(params, &mut chunks);
+    collect_message_chunks(delta, &mut chunks);
     if chunks.is_empty() {
         None
     } else {
@@ -1817,10 +2442,453 @@ fn extract_message_text_from_event(event: &Value) -> Option<String> {
     }
 }
 
-async fn run_codex_semantic_rewrite(
+fn truncate_trace_preview(value: &str) -> String {
+    truncate_text_to_chars(
+        value
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim(),
+        SEMANTIC_TRACE_PREVIEW_LIMIT,
+    )
+}
+
+fn extract_turn_id_from_event(event: &Value) -> Option<String> {
+    let params = event.get("params")?;
+    params
+        .get("turnId")
+        .or_else(|| params.get("turn_id"))
+        .or_else(|| params.get("turn").and_then(|turn| turn.get("id")))
+        .or_else(|| params.get("msg").and_then(|msg| msg.get("turn_id")))
+        .or_else(|| params.get("msg").and_then(|msg| msg.get("turnId")))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
+fn extract_thread_ids_from_event(event: &Value) -> Vec<String> {
+    fn collect(value: &Value, output: &mut Vec<String>, depth: usize) {
+        if depth > 8 {
+            return;
+        }
+        if let Some(candidate) = value
+            .get("threadId")
+            .or_else(|| value.get("thread_id"))
+            .or_else(|| value.get("conversationId"))
+            .or_else(|| value.get("conversation_id"))
+            .and_then(|entry| entry.as_str())
+            .map(|entry| entry.trim())
+            .filter(|entry| !entry.is_empty())
+        {
+            output.push(candidate.to_string());
+        }
+        if let Some(thread_obj) = value.get("thread") {
+            if let Some(candidate) = thread_obj
+                .get("id")
+                .or_else(|| thread_obj.get("threadId"))
+                .or_else(|| thread_obj.get("thread_id"))
+                .and_then(|entry| entry.as_str())
+                .map(|entry| entry.trim())
+                .filter(|entry| !entry.is_empty())
+            {
+                output.push(candidate.to_string());
+            }
+        }
+        match value {
+            Value::Object(map) => {
+                for child in map.values() {
+                    collect(child, output, depth + 1);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    collect(child, output, depth + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut candidates = Vec::<String>::new();
+    collect(event, &mut candidates, 0);
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|value| seen.insert(value.clone()))
+        .collect::<Vec<_>>()
+}
+
+fn extract_item_identifiers_from_event(event: &Value) -> (Option<String>, Option<String>) {
+    let params = event.get("params");
+    let item = params
+        .and_then(|params| params.get("item"))
+        .or_else(|| params.and_then(|params| params.get("msg").and_then(|msg| msg.get("item"))));
+    let item_type = item
+        .and_then(|item| item.get("type"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    let item_id = item
+        .and_then(|item| item.get("id"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    (item_type, item_id)
+}
+
+fn extract_error_message_from_event(event: &Value) -> Option<String> {
+    let params = event.get("params")?;
+    let error = params.get("error")?;
+    if let Some(text) = error.as_str() {
+        return Some(text.to_string());
+    }
+    if let Some(obj) = error.as_object() {
+        let message = obj
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Unknown error");
+        let detail = obj
+            .get("additionalDetails")
+            .or_else(|| obj.get("additional_details"))
+            .and_then(|value| value.as_str());
+        return Some(match detail {
+            Some(detail) if !detail.trim().is_empty() => format!("{message} ({detail})"),
+            _ => message.to_string(),
+        });
+    }
+    Some(error.to_string())
+}
+
+fn normalize_semantic_event_method(method: &str) -> Option<&'static str> {
+    match method {
+        "item/agentMessage/delta"
+        | "codex/event/agent_message_content_delta"
+        | "codex/event/agent_message_delta" => Some("AgentDelta"),
+        "item/agentMessage"
+        | "item/completed"
+        | "codex/event/agent_message"
+        | "codex/event/item_completed" => Some("AgentCompletedText"),
+        "turn/completed" => Some("TurnCompleted"),
+        "turn/error" | "error" => Some("TurnError"),
+        _ => None,
+    }
+}
+
+fn collect_message_chunks(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                output.push(trimmed.to_string());
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_message_chunks(item, output);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(text) = map.get("text").and_then(|value| value.as_str()) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    output.push(trimmed.to_string());
+                }
+            }
+            if let Some(value) = map.get("content") {
+                collect_message_chunks(value, output);
+            }
+            if let Some(value) = map.get("output") {
+                collect_message_chunks(value, output);
+            }
+            if let Some(value) = map.get("message") {
+                collect_message_chunks(value, output);
+            }
+            if let Some(value) = map.get("item") {
+                collect_message_chunks(value, output);
+            }
+            if let Some(value) = map.get("result") {
+                collect_message_chunks(value, output);
+            }
+            if let Some(value) = map.get("response") {
+                collect_message_chunks(value, output);
+            }
+            if let Some(value) = map.get("turn") {
+                collect_message_chunks(value, output);
+            }
+            if let Some(value) = map.get("items") {
+                collect_message_chunks(value, output);
+            }
+            if let Some(value) = map.get("messages") {
+                collect_message_chunks(value, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_message_text_from_value(value: &Value) -> Option<String> {
+    let mut chunks = Vec::new();
+    collect_message_chunks(value, &mut chunks);
+    if chunks.is_empty() {
+        None
+    } else {
+        Some(chunks.join("\n"))
+    }
+}
+
+fn is_agent_item_payload(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let type_value = object
+        .get("type")
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if type_value.contains("agent") || type_value.contains("assistant") {
+        return true;
+    }
+    let role_value = object
+        .get("role")
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if role_value == "assistant" || role_value == "agent" {
+        return true;
+    }
+    let author_value = object
+        .get("author")
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if author_value == "assistant" || author_value == "agent" {
+        return true;
+    }
+    object
+        .get("source")
+        .and_then(|entry| entry.as_str())
+        .map(|entry| {
+            let normalized = entry.to_lowercase();
+            normalized.contains("assistant")
+                || normalized.contains("agent")
+                || normalized.contains("model")
+        })
+        .unwrap_or(false)
+}
+
+fn is_user_item_payload(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let type_value = object
+        .get("type")
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if type_value.contains("user") {
+        return true;
+    }
+    let role_value = object
+        .get("role")
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if role_value == "user" {
+        return true;
+    }
+    let author_value = object
+        .get("author")
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if author_value == "user" {
+        return true;
+    }
+    object
+        .get("source")
+        .and_then(|entry| entry.as_str())
+        .map(|entry| entry.to_lowercase().contains("user"))
+        .unwrap_or(false)
+}
+
+fn collect_event_text_candidates(event: &Value) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Some(params) = event.get("params") {
+        if let Some(msg) = params.get("msg") {
+            if let Some(text) = extract_message_text_from_value(msg) {
+                candidates.push(text);
+            }
+            if let Some(item) = msg.get("item") {
+                if !is_user_item_payload(item) {
+                    if let Some(text) = extract_message_text_from_value(item) {
+                        candidates.push(text);
+                    }
+                }
+            }
+        }
+        if let Some(item) = params.get("item") {
+            if !is_user_item_payload(item) {
+                if let Some(text) = extract_message_text_from_value(item) {
+                    candidates.push(text);
+                }
+            }
+        }
+        if let Some(message) = params.get("message") {
+            if !is_user_item_payload(message) {
+                if let Some(text) = extract_message_text_from_value(message) {
+                    candidates.push(text);
+                }
+            }
+        }
+        if let Some(output) = params.get("output") {
+            if let Some(text) = extract_message_text_from_value(output) {
+                candidates.push(text);
+            }
+        }
+        if let Some(result) = params.get("result") {
+            if let Some(text) = extract_message_text_from_value(result) {
+                candidates.push(text);
+            }
+        }
+        if let Some(turn) = params.get("turn") {
+            if let Some(text) = extract_message_text_from_value(turn) {
+                candidates.push(text);
+            }
+        }
+    }
+
+    if let Some(result) = event.get("result") {
+        if let Some(text) = extract_message_text_from_value(result) {
+            candidates.push(text);
+        }
+    }
+    candidates
+}
+
+fn extract_agent_message_text_from_event(event: &Value) -> Option<String> {
+    let method = event
+        .get("method")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let params = event.get("params")?;
+    match method {
+        "item/agentMessage" => extract_message_text_from_value(params),
+        "item/completed" => {
+            let candidate = params
+                .get("item")
+                .or_else(|| params.get("message"))
+                .or_else(|| params.get("output"))?;
+            if is_agent_item_payload(candidate) {
+                extract_message_text_from_value(candidate)
+            } else if is_user_item_payload(candidate) {
+                None
+            } else {
+                extract_message_text_from_value(candidate)
+            }
+        }
+        "turn/completed" => collect_event_text_candidates(event)
+            .into_iter()
+            .max_by_key(|entry| entry.len()),
+        "codex/event/agent_message" => params
+            .get("msg")
+            .or_else(|| params.get("message"))
+            .and_then(extract_message_text_from_value)
+            .or_else(|| {
+                collect_event_text_candidates(event)
+                    .into_iter()
+                    .max_by_key(|entry| entry.len())
+            }),
+        "codex/event/item_completed" => {
+            let candidate = params
+                .get("msg")
+                .and_then(|msg| msg.get("item"))
+                .or_else(|| params.get("item"))
+                .or_else(|| params.get("message"))?;
+            if is_agent_item_payload(candidate) {
+                extract_message_text_from_value(candidate)
+            } else if is_user_item_payload(candidate) {
+                None
+            } else {
+                extract_message_text_from_value(candidate)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn looks_like_prompt_echo(raw_response: &str, prompt: &str) -> bool {
+    let raw = raw_response.trim();
+    let input = prompt.trim();
+    if raw.is_empty() || input.is_empty() {
+        return false;
+    }
+    if raw == input {
+        return true;
+    }
+    let raw_lower = raw.to_lowercase();
+    let input_lower = input.to_lowercase();
+    if raw_lower.contains("rewrite only card")
+        && raw_lower.contains("return json only")
+        && raw_lower.contains("\"semanticmode\"")
+        && raw_lower.contains("standalone thought")
+    {
+        return true;
+    }
+    let shared_markers = [
+        "rewrite only card",
+        "return json only",
+        "standalone thought, never a fragment",
+        "2-5 concise bullets with concrete details",
+        "context:",
+    ];
+    let overlap_count = shared_markers
+        .iter()
+        .filter(|marker| raw_lower.contains(*marker) && input_lower.contains(*marker))
+        .count();
+    overlap_count >= 3
+}
+
+fn semantic_auth_error_marker(value: &str) -> bool {
+    let normalized = value.to_lowercase();
+    normalized.contains("missing bearer")
+        || normalized.contains("unauthorized")
+        || normalized.contains("authentication in header")
+        || (normalized.contains("401") && normalized.contains("api.openai.com"))
+}
+
+fn choose_semantic_delta_output(
+    item_agent_delta: &str,
+    codex_content_delta: &str,
+    codex_agent_delta: &str,
+    generic_delta: &str,
+) -> Option<(String, String)> {
+    let candidates = [
+        ("agent_delta:item", item_agent_delta),
+        (
+            "agent_delta:codex_content",
+            codex_content_delta,
+        ),
+        ("agent_delta:codex_agent", codex_agent_delta),
+        ("agent_delta:generic", generic_delta),
+    ];
+
+    let mut fallback: Option<(String, String)> = None;
+    for (source, candidate) in candidates {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if fallback.is_none() {
+            fallback = Some((source.to_string(), trimmed.to_string()));
+        }
+        if parse_json_value_from_response(trimmed).is_some() {
+            return Some((source.to_string(), trimmed.to_string()));
+        }
+    }
+
+    fallback
+}
+
+async fn start_semantic_rewrite_day_thread(
     session: Arc<WorkspaceSession>,
     cwd: &str,
-    prompt: String,
 ) -> Result<String, String> {
     let thread_result = session
         .send_request(
@@ -1839,18 +2907,41 @@ async fn run_codex_semantic_rewrite(
             .unwrap_or("Unknown error starting semantic rewrite thread");
         return Err(message.to_string());
     }
+    extract_thread_id_from_response(&thread_result)
+        .ok_or_else(|| "Failed to resolve thread id for semantic rewrite".to_string())
+}
 
-    let thread_id = extract_thread_id_from_response(&thread_result)
-        .ok_or_else(|| "Failed to resolve thread id for semantic rewrite".to_string())?;
-    let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
-
-    {
-        let mut callbacks = session.background_thread_callbacks.lock().await;
-        callbacks.insert(thread_id.clone(), tx);
+async fn resume_semantic_rewrite_day_thread(
+    session: Arc<WorkspaceSession>,
+    thread_id: &str,
+) -> Result<(), String> {
+    let response = session
+        .send_request("thread/resume", json!({ "threadId": thread_id }))
+        .await?;
+    if let Some(error) = response.get("error") {
+        let message = error
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Failed to resume semantic rewrite thread");
+        return Err(message.to_string());
     }
+    Ok(())
+}
+
+async fn run_codex_semantic_turn(
+    session: Arc<WorkspaceSession>,
+    cwd: &str,
+    thread_id: &str,
+    prompt: &str,
+) -> Result<SemanticTurnOutput, SemanticTurnFailure> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+    let callback_consumer_id = next_background_callback_id("semantic-rewrite");
+    session
+        .register_background_callback(thread_id, callback_consumer_id.as_str(), tx)
+        .await;
 
     let turn_params = build_turn_start_params(
-        &thread_id,
+        thread_id,
         vec![json!({ "type": "text", "text": prompt })],
         cwd,
         "never",
@@ -1860,17 +2951,30 @@ async fn run_codex_semantic_rewrite(
         None,
         None,
     );
+
+    let mut trace_stats = SemanticAttemptTraceStats::default();
+    let mut event_trace = Vec::<SemanticEventTraceEntry>::new();
+    let mut item_agent_delta = String::new();
+    let mut codex_content_delta = String::new();
+    let mut codex_agent_delta = String::new();
+    let mut generic_delta = String::new();
+    let mut completed_text_candidates = Vec::<String>::new();
+    let mut turn_completed_candidate: Option<String> = None;
+
     let turn_start_result = match session.send_request("turn/start", turn_params).await {
         Ok(result) => result,
         Err(error) => {
-            {
-                let mut callbacks = session.background_thread_callbacks.lock().await;
-                callbacks.remove(&thread_id);
-            }
-            let _ = session
-                .send_request("thread/archive", json!({ "threadId": thread_id }))
+            session
+                .unregister_background_callback(thread_id, callback_consumer_id.as_str())
                 .await;
-            return Err(error);
+            trace_stats.error_seen = true;
+            trace_stats.first_error_message = Some(error.clone());
+            return Err(SemanticTurnFailure {
+                error,
+                output: String::new(),
+                event_trace,
+                trace_stats,
+            });
         }
     };
     if let Some(error) = turn_start_result.get("error") {
@@ -1878,44 +2982,129 @@ async fn run_codex_semantic_rewrite(
             .get("message")
             .and_then(|value| value.as_str())
             .unwrap_or("Semantic rewrite turn failed to start");
-        {
-            let mut callbacks = session.background_thread_callbacks.lock().await;
-            callbacks.remove(&thread_id);
-        }
-        let _ = session
-            .send_request("thread/archive", json!({ "threadId": thread_id }))
+        session
+            .unregister_background_callback(thread_id, callback_consumer_id.as_str())
             .await;
-        return Err(message.to_string());
+        trace_stats.error_seen = true;
+        trace_stats.first_error_message = Some(message.to_string());
+        return Err(SemanticTurnFailure {
+            error: message.to_string(),
+            output: String::new(),
+            event_trace,
+            trace_stats,
+        });
     }
 
-    let mut output = String::new();
+    let active_turn_id = turn_start_result
+        .get("result")
+        .and_then(|result| result.get("turn"))
+        .and_then(|turn| turn.get("id"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+
     let collect_result = timeout(Duration::from_secs(75), async {
         loop {
             let Some(event) = rx.recv().await else {
                 break Ok::<(), String>(());
             };
-            let method = event.get("method").and_then(|value| value.as_str()).unwrap_or("");
-            match method {
-                "item/agentMessage/delta" => {
-                    if let Some(delta) = extract_delta_text(&event) {
-                        output.push_str(delta.as_str());
-                    }
+            let method = event
+                .get("method")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if !method.is_empty() && !trace_stats.methods_seen.iter().any(|entry| entry == method) {
+                if trace_stats.methods_seen.len() < 64 {
+                    trace_stats.methods_seen.push(method.to_string());
                 }
-                "item/agentMessage" | "item/completed" => {
-                    if output.trim().is_empty() {
-                        if let Some(full_text) = extract_message_text_from_event(&event) {
-                            output.push_str(full_text.as_str());
+            }
+
+            let thread_candidates = extract_thread_ids_from_event(&event);
+            let turn_id = extract_turn_id_from_event(&event);
+            let matches_thread = if thread_candidates.is_empty() {
+                true
+            } else {
+                thread_candidates
+                    .iter()
+                    .any(|candidate| candidate == thread_id)
+            };
+            let matches_turn = active_turn_id
+                .as_ref()
+                .map(|expected| {
+                    turn_id
+                        .as_deref()
+                        .map(|value| value == expected)
+                        .unwrap_or(true)
+                })
+                .unwrap_or(true);
+
+            let normalized = normalize_semantic_event_method(method).map(|value| value.to_string());
+            let delta_preview =
+                extract_delta_text(&event).map(|value| truncate_trace_preview(value.as_str()));
+            let error_preview = extract_error_message_from_event(&event)
+                .map(|value| truncate_trace_preview(value.as_str()));
+            let params_preview = event
+                .get("params")
+                .or_else(|| event.get("result"))
+                .map(|value| truncate_trace_preview(value.to_string().as_str()));
+            let (item_type, item_id) = extract_item_identifiers_from_event(&event);
+
+            if event_trace.len() < SEMANTIC_EVENT_TRACE_LIMIT {
+                event_trace.push(SemanticEventTraceEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    method: method.to_string(),
+                    normalized_method: normalized.clone(),
+                    thread_ids: thread_candidates.clone(),
+                    turn_id: turn_id.clone(),
+                    item_type,
+                    item_id,
+                    params_preview,
+                    delta_preview: delta_preview.clone(),
+                    error_preview: error_preview.clone(),
+                });
+            }
+
+            match normalized.as_deref() {
+                Some("AgentDelta") if matches_thread && matches_turn => {
+                    if let Some(delta) =
+                        extract_delta_text(&event).filter(|value| !value.trim().is_empty())
+                    {
+                        trace_stats.agent_delta_seen = true;
+                        match method {
+                            "item/agentMessage/delta" => item_agent_delta.push_str(delta.as_str()),
+                            "codex/event/agent_message_content_delta" => {
+                                codex_content_delta.push_str(delta.as_str())
+                            }
+                            "codex/event/agent_message_delta" => {
+                                codex_agent_delta.push_str(delta.as_str())
+                            }
+                            _ => generic_delta.push_str(delta.as_str()),
                         }
                     }
                 }
-                "turn/completed" => break Ok::<(), String>(()),
-                "turn/error" => {
-                    let message = event
-                        .get("params")
-                        .and_then(|params| params.get("error"))
-                        .and_then(|error| error.as_str())
-                        .unwrap_or("Semantic rewrite turn failed");
-                    break Err(message.to_string());
+                Some("AgentCompletedText") if matches_thread && matches_turn => {
+                    if let Some(full_text) = extract_agent_message_text_from_event(&event)
+                        .filter(|value| !value.trim().is_empty())
+                    {
+                        trace_stats.agent_completed_seen = true;
+                        completed_text_candidates.push(full_text);
+                    }
+                }
+                Some("TurnCompleted") if matches_thread && matches_turn => {
+                    trace_stats.turn_completed_seen = true;
+                    if let Some(full_text) = extract_agent_message_text_from_event(&event)
+                        .filter(|value| !value.trim().is_empty())
+                    {
+                        turn_completed_candidate = Some(full_text);
+                    }
+                    break Ok::<(), String>(());
+                }
+                Some("TurnError") if matches_thread && matches_turn => {
+                    trace_stats.error_seen = true;
+                    let message = extract_error_message_from_event(&event)
+                        .unwrap_or_else(|| "Semantic rewrite turn failed".to_string());
+                    if trace_stats.first_error_message.is_none() {
+                        trace_stats.first_error_message = Some(message.clone());
+                    }
+                    break Err(message);
                 }
                 _ => {}
             }
@@ -1923,63 +3112,469 @@ async fn run_codex_semantic_rewrite(
     })
     .await;
 
-    {
-        let mut callbacks = session.background_thread_callbacks.lock().await;
-        callbacks.remove(&thread_id);
-    }
-    let _ = session
-        .send_request("thread/archive", json!({ "threadId": thread_id }))
+    session
+        .unregister_background_callback(thread_id, callback_consumer_id.as_str())
         .await;
 
-    match collect_result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(error),
-        Err(_) => return Err("Timed out waiting for semantic rewrite response".to_string()),
+    let collect_error = match collect_result {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(error),
+        Err(_) => Some("Timed out waiting for semantic rewrite response".to_string()),
+    };
+
+    let assembled_output = if let Some((source, value)) = choose_semantic_delta_output(
+        item_agent_delta.as_str(),
+        codex_content_delta.as_str(),
+        codex_agent_delta.as_str(),
+        generic_delta.as_str(),
+    ) {
+        trace_stats.output_source = Some(source);
+        value
+    } else if let Some(completed) = completed_text_candidates
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .max_by_key(|value| value.len())
+    {
+        trace_stats.output_source = Some("agent_completed_text".to_string());
+        completed.trim().to_string()
+    } else if let Some(completed_turn) = turn_completed_candidate
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        trace_stats.output_source = Some("turn_completed_text".to_string());
+        completed_turn
+    } else {
+        trace_stats.output_source = Some("none".to_string());
+        String::new()
+    };
+    trace_stats.output_chars = assembled_output.chars().count();
+    trace_stats.event_count = event_trace.len();
+
+    if let Some(error) = collect_error {
+        if trace_stats.first_error_message.is_none() {
+            trace_stats.first_error_message = Some(error.clone());
+        }
+        return Err(SemanticTurnFailure {
+            error,
+            output: assembled_output,
+            event_trace,
+            trace_stats,
+        });
     }
 
-    let trimmed = output.trim().to_string();
-    if trimmed.is_empty() {
-        return Err("Semantic rewrite returned empty output".to_string());
+    if assembled_output.is_empty() {
+        let methods = if trace_stats.methods_seen.is_empty() {
+            "none".to_string()
+        } else {
+            trace_stats.methods_seen.join(", ")
+        };
+        let error = format!("Semantic rewrite returned empty output (events: {methods})");
+        if trace_stats.first_error_message.is_none() {
+            trace_stats.first_error_message = Some(error.clone());
+        }
+        return Err(SemanticTurnFailure {
+            error,
+            output: String::new(),
+            event_trace,
+            trace_stats,
+        });
     }
-    Ok(trimmed)
+
+    Ok(SemanticTurnOutput {
+        output: assembled_output,
+        event_trace,
+        trace_stats,
+    })
+}
+
+async fn ensure_semantic_day_thread(
+    session: Arc<WorkspaceSession>,
+    workspace_path: &str,
+    obsidian_root: Option<&str>,
+    obsidian: &ObsidianIO,
+    date_iso: &str,
+    day_cards: &[StreamCard],
+    force_new_thread: bool,
+) -> Result<SemanticDayThread, String> {
+    NaiveDate::parse_from_str(date_iso, "%Y-%m-%d")
+        .map_err(|error| format!("Invalid day thread date {date_iso}: {error}"))?;
+
+    let runtime_state = if force_new_thread {
+        None
+    } else {
+        obsidian
+            .read_day_thread_runtime_state(workspace_path, obsidian_root, date_iso)
+            .await
+            .map_err(|error| error.to_string())?
+    };
+
+    let seed_hash = compute_day_seed_hash(day_cards);
+    let mut thread_id = String::new();
+    let mut needs_seed = true;
+
+    if let Some(state) = runtime_state {
+        if !state.thread_id.trim().is_empty()
+            && resume_semantic_rewrite_day_thread(session.clone(), state.thread_id.as_str())
+                .await
+                .is_ok()
+        {
+            thread_id = state.thread_id;
+            needs_seed = state.last_seed_hash.as_deref() != Some(seed_hash.as_str());
+        }
+    }
+
+    if thread_id.is_empty() {
+        thread_id = start_semantic_rewrite_day_thread(session.clone(), workspace_path).await?;
+        needs_seed = true;
+    }
+
+    if needs_seed {
+        let seed_prompt = build_day_context_seed_prompt(date_iso, day_cards, seed_hash.as_str());
+        if run_codex_semantic_turn(
+            session.clone(),
+            workspace_path,
+            thread_id.as_str(),
+            seed_prompt.as_str(),
+        )
+        .await
+        .is_err()
+        {
+            thread_id = start_semantic_rewrite_day_thread(session.clone(), workspace_path).await?;
+            run_codex_semantic_turn(
+                session.clone(),
+                workspace_path,
+                thread_id.as_str(),
+                seed_prompt.as_str(),
+            )
+            .await
+            .map_err(|error| {
+                format!("Failed to seed day context for {date_iso}: {}", error.error)
+            })?;
+        }
+    }
+
+    let payload = DayThreadRuntimeState {
+        date: date_iso.to_string(),
+        thread_id: thread_id.clone(),
+        last_seed_hash: Some(seed_hash.clone()),
+        card_count: day_cards.len(),
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    };
+    obsidian
+        .write_day_thread_runtime_state(workspace_path, obsidian_root, &payload)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(SemanticDayThread { thread_id })
+}
+
+fn build_rewrite_run_log(
+    card_id: &str,
+    date_iso: &str,
+    thread_id: &str,
+    started_at: &str,
+    attempts: Vec<SemanticRewriteAttemptTrace>,
+    failure_reason: Option<String>,
+) -> SemanticRewriteRunLog {
+    let (prompt, raw_response, parsed_json, trace_stats) = attempts
+        .last()
+        .map(|attempt| {
+            (
+                attempt.prompt.clone(),
+                attempt.raw_response.clone(),
+                attempt.parsed_json.clone(),
+                attempt.trace_stats.clone(),
+            )
+        })
+        .unwrap_or_else(|| (String::new(), String::new(), None, None));
+    SemanticRewriteRunLog {
+        card_id: card_id.to_string(),
+        date: date_iso.to_string(),
+        thread_id: thread_id.to_string(),
+        prompt,
+        raw_response,
+        parsed_json,
+        failure_reason,
+        started_at: started_at.to_string(),
+        completed_at: chrono::Utc::now().to_rfc3339(),
+        attempts,
+        trace_stats,
+    }
+}
+
+fn to_semantic_log_attempt(attempt: &SemanticRewriteAttemptTrace) -> SemanticRewriteLogAttempt {
+    SemanticRewriteLogAttempt {
+        stage: attempt.stage.clone(),
+        prompt: attempt.prompt.clone(),
+        raw_response: attempt.raw_response.clone(),
+        parsed_json: attempt.parsed_json.clone(),
+        failure_reason: attempt.failure_reason.clone(),
+        event_trace: attempt.event_trace.clone(),
+        trace_stats: attempt.trace_stats.clone(),
+    }
+}
+
+fn to_semantic_log_attempts(
+    attempts: &[SemanticRewriteAttemptTrace],
+) -> Vec<SemanticRewriteLogAttempt> {
+    attempts
+        .iter()
+        .map(to_semantic_log_attempt)
+        .collect::<Vec<_>>()
 }
 
 async fn rewrite_semantics_with_codex(
-    session: Option<Arc<WorkspaceSession>>,
+    session: Arc<WorkspaceSession>,
     workspace_path: &str,
+    thread_id: &str,
     card: &StreamCard,
     input_text: &str,
     output_text: Option<&str>,
-) -> Result<CausalCardContent, String> {
-    let session = session.ok_or_else(|| "workspace session unavailable".to_string())?;
+) -> Result<SemanticRewriteRunSuccess, SemanticRewriteRunFailure> {
+    let date_iso = card_date_iso(card.occurred_at.as_str())
+        .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let mut attempts = Vec::new();
+
     let first_prompt = semantic_rewrite_prompt(card, input_text, output_text);
-    let mut active_payload = rewrite_semantics_with_codex_attempt(
+    let first_turn = match run_codex_semantic_turn(
         session.clone(),
         workspace_path,
-        first_prompt,
+        thread_id,
+        first_prompt.as_str(),
     )
-    .await?;
+    .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            attempts.push(SemanticRewriteAttemptTrace {
+                stage: "initial".to_string(),
+                prompt: first_prompt.clone(),
+                raw_response: error.output.clone(),
+                parsed_json: None,
+                failure_reason: Some(error.error.clone()),
+                event_trace: error.event_trace.clone(),
+                trace_stats: Some(error.trace_stats.clone()),
+            });
+            let log = build_rewrite_run_log(
+                card.id.as_str(),
+                date_iso.as_str(),
+                thread_id,
+                started_at.as_str(),
+                attempts,
+                Some(error.error.clone()),
+            );
+            return Err(SemanticRewriteRunFailure {
+                error: error.error,
+                log,
+            });
+        }
+    };
+    let first_raw = first_turn.output;
+    if looks_like_prompt_echo(first_raw.as_str(), first_prompt.as_str()) {
+        let error =
+            "Semantic rewrite response echoed prompt input. Retained previous nodes.".to_string();
+        attempts.push(SemanticRewriteAttemptTrace {
+            stage: "initial".to_string(),
+            prompt: first_prompt.clone(),
+            raw_response: first_raw.clone(),
+            parsed_json: None,
+            failure_reason: Some(error.clone()),
+            event_trace: first_turn.event_trace.clone(),
+            trace_stats: Some(first_turn.trace_stats.clone()),
+        });
+        let log = build_rewrite_run_log(
+            card.id.as_str(),
+            date_iso.as_str(),
+            thread_id,
+            started_at.as_str(),
+            attempts,
+            Some(error.clone()),
+        );
+        return Err(SemanticRewriteRunFailure { error, log });
+    }
+
+    let first_parsed_json = parse_json_value_from_response(first_raw.as_str());
+    let mut active_payload = match parse_llm_semantic_payload(first_raw.as_str()) {
+        Ok(payload) => payload,
+        Err(error) => {
+            attempts.push(SemanticRewriteAttemptTrace {
+                stage: "initial".to_string(),
+                prompt: first_prompt.clone(),
+                raw_response: first_raw.clone(),
+                parsed_json: first_parsed_json.clone(),
+                failure_reason: Some(error.clone()),
+                event_trace: first_turn.event_trace.clone(),
+                trace_stats: Some(first_turn.trace_stats.clone()),
+            });
+            let log = build_rewrite_run_log(
+                card.id.as_str(),
+                date_iso.as_str(),
+                thread_id,
+                started_at.as_str(),
+                attempts,
+                Some(error.clone()),
+            );
+            return Err(SemanticRewriteRunFailure { error, log });
+        }
+    };
+
+    if let Some(violation) = payload_placeholder_violation(&active_payload) {
+        let error = "LLM output invalid, retained previous nodes".to_string();
+        attempts.push(SemanticRewriteAttemptTrace {
+            stage: "initial".to_string(),
+            prompt: first_prompt.clone(),
+            raw_response: first_raw.clone(),
+            parsed_json: first_parsed_json.clone(),
+            failure_reason: Some(format!("{error}: {violation}")),
+            event_trace: first_turn.event_trace.clone(),
+            trace_stats: Some(first_turn.trace_stats.clone()),
+        });
+        let log = build_rewrite_run_log(
+            card.id.as_str(),
+            date_iso.as_str(),
+            thread_id,
+            started_at.as_str(),
+            attempts,
+            Some(format!("{error}: {violation}")),
+        );
+        return Err(SemanticRewriteRunFailure { error, log });
+    }
+    attempts.push(SemanticRewriteAttemptTrace {
+        stage: "initial".to_string(),
+        prompt: first_prompt.clone(),
+        raw_response: first_raw.clone(),
+        parsed_json: first_parsed_json.clone(),
+        failure_reason: None,
+        event_trace: first_turn.event_trace.clone(),
+        trace_stats: Some(first_turn.trace_stats.clone()),
+    });
 
     let mut semantic_mode = parse_semantic_mode(active_payload.semantic_mode.as_deref())
-        .or_else(|| card.causal.as_ref().and_then(|causal| causal.semantic_mode.clone()))
+        .or_else(|| {
+            card.causal
+                .as_ref()
+                .and_then(|causal| causal.semantic_mode.clone())
+        })
         .unwrap_or(CausalSemanticMode::StatementWhy);
     let mut right_role = mode_to_roles(semantic_mode.clone()).1;
     let mut normalized_right_nodes =
         normalize_llm_right_nodes(card.id.as_str(), &active_payload.right, right_role.clone());
 
     if llm_nodes_need_retry(&normalized_right_nodes) {
-        let retry_prompt = semantic_rewrite_retry_prompt(
-            card,
-            input_text,
-            output_text,
-            &normalized_right_nodes,
-        );
-        let retry_payload = rewrite_semantics_with_codex_attempt(
-            session,
+        let retry_prompt =
+            semantic_rewrite_retry_prompt(card, input_text, output_text, &normalized_right_nodes);
+        let retry_turn = match run_codex_semantic_turn(
+            session.clone(),
             workspace_path,
-            retry_prompt,
+            thread_id,
+            retry_prompt.as_str(),
         )
-        .await?;
+        .await
+        {
+            Ok(output) => output,
+            Err(error) => {
+                attempts.push(SemanticRewriteAttemptTrace {
+                    stage: "retry".to_string(),
+                    prompt: retry_prompt.clone(),
+                    raw_response: error.output.clone(),
+                    parsed_json: None,
+                    failure_reason: Some(error.error.clone()),
+                    event_trace: error.event_trace.clone(),
+                    trace_stats: Some(error.trace_stats.clone()),
+                });
+                let log = build_rewrite_run_log(
+                    card.id.as_str(),
+                    date_iso.as_str(),
+                    thread_id,
+                    started_at.as_str(),
+                    attempts,
+                    Some(error.error.clone()),
+                );
+                return Err(SemanticRewriteRunFailure {
+                    error: error.error,
+                    log,
+                });
+            }
+        };
+        let retry_raw = retry_turn.output;
+        if looks_like_prompt_echo(retry_raw.as_str(), retry_prompt.as_str()) {
+            let error = "Semantic rewrite response echoed prompt input. Retained previous nodes."
+                .to_string();
+            attempts.push(SemanticRewriteAttemptTrace {
+                stage: "retry".to_string(),
+                prompt: retry_prompt.clone(),
+                raw_response: retry_raw.clone(),
+                parsed_json: None,
+                failure_reason: Some(error.clone()),
+                event_trace: retry_turn.event_trace.clone(),
+                trace_stats: Some(retry_turn.trace_stats.clone()),
+            });
+            let log = build_rewrite_run_log(
+                card.id.as_str(),
+                date_iso.as_str(),
+                thread_id,
+                started_at.as_str(),
+                attempts,
+                Some(error.clone()),
+            );
+            return Err(SemanticRewriteRunFailure { error, log });
+        }
+        let retry_parsed_json = parse_json_value_from_response(retry_raw.as_str());
+        let retry_payload = match parse_llm_semantic_payload(retry_raw.as_str()) {
+            Ok(payload) => payload,
+            Err(error) => {
+                attempts.push(SemanticRewriteAttemptTrace {
+                    stage: "retry".to_string(),
+                    prompt: retry_prompt.clone(),
+                    raw_response: retry_raw.clone(),
+                    parsed_json: retry_parsed_json.clone(),
+                    failure_reason: Some(error.clone()),
+                    event_trace: retry_turn.event_trace.clone(),
+                    trace_stats: Some(retry_turn.trace_stats.clone()),
+                });
+                let log = build_rewrite_run_log(
+                    card.id.as_str(),
+                    date_iso.as_str(),
+                    thread_id,
+                    started_at.as_str(),
+                    attempts,
+                    Some(error.clone()),
+                );
+                return Err(SemanticRewriteRunFailure { error, log });
+            }
+        };
+        if let Some(violation) = payload_placeholder_violation(&retry_payload) {
+            let error = "LLM output invalid, retained previous nodes".to_string();
+            attempts.push(SemanticRewriteAttemptTrace {
+                stage: "retry".to_string(),
+                prompt: retry_prompt.clone(),
+                raw_response: retry_raw.clone(),
+                parsed_json: retry_parsed_json.clone(),
+                failure_reason: Some(format!("{error}: {violation}")),
+                event_trace: retry_turn.event_trace.clone(),
+                trace_stats: Some(retry_turn.trace_stats.clone()),
+            });
+            let log = build_rewrite_run_log(
+                card.id.as_str(),
+                date_iso.as_str(),
+                thread_id,
+                started_at.as_str(),
+                attempts,
+                Some(format!("{error}: {violation}")),
+            );
+            return Err(SemanticRewriteRunFailure { error, log });
+        }
+        attempts.push(SemanticRewriteAttemptTrace {
+            stage: "retry".to_string(),
+            prompt: retry_prompt,
+            raw_response: retry_raw,
+            parsed_json: retry_parsed_json,
+            failure_reason: None,
+            event_trace: retry_turn.event_trace,
+            trace_stats: Some(retry_turn.trace_stats),
+        });
         active_payload = retry_payload;
         semantic_mode = parse_semantic_mode(active_payload.semantic_mode.as_deref())
             .or(Some(semantic_mode))
@@ -1990,10 +3585,18 @@ async fn rewrite_semantics_with_codex(
     }
 
     if normalized_right_nodes.is_empty() || llm_nodes_need_retry(&normalized_right_nodes) {
-        return Err(
+        let error =
             "LLM rewrite returned low-quality semantic nodes. Try rebuilding again after refining source content."
-                .to_string(),
+                .to_string();
+        let log = build_rewrite_run_log(
+            card.id.as_str(),
+            date_iso.as_str(),
+            thread_id,
+            started_at.as_str(),
+            attempts,
+            Some(error.clone()),
         );
+        return Err(SemanticRewriteRunFailure { error, log });
     }
 
     let (left_role, _) = mode_to_roles(semantic_mode.clone());
@@ -2084,7 +3687,7 @@ async fn rewrite_semantics_with_codex(
         .map(|count| count as u32)
         .filter(|count| *count > 0);
 
-    Ok(CausalCardContent {
+    let causal = CausalCardContent {
         left_nodes: vec![left_node],
         right_nodes,
         links,
@@ -2096,7 +3699,327 @@ async fn rewrite_semantics_with_codex(
             overflow_count,
         }),
         transcript_source: Some(CausalTranscriptSource::Both),
-    })
+    };
+    let log = build_rewrite_run_log(
+        card.id.as_str(),
+        date_iso.as_str(),
+        thread_id,
+        started_at.as_str(),
+        attempts,
+        None,
+    );
+    Ok(SemanticRewriteRunSuccess { causal, log })
+}
+
+#[cfg(test)]
+mod semantic_rewrite_day_thread_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sample_card(id: &str, occurred_at: &str, updated_at: &str, title: &str) -> StreamCard {
+        StreamCard {
+            id: id.to_string(),
+            occurred_at: occurred_at.to_string(),
+            created_at: occurred_at.to_string(),
+            updated_at: updated_at.to_string(),
+            version: 1,
+            card_type: CardType::Thought,
+            domain: DomainId::General,
+            emoji: "💭".to_string(),
+            layout_mode: LayoutMode::CauseEffect,
+            causal: None,
+            state: CardState::Complete,
+            processing_step: None,
+            processing_steps: None,
+            title: title.to_string(),
+            subtitle: None,
+            summary: Some("Summary".to_string()),
+            duration_ms: None,
+            image: None,
+            stats: None,
+            entities: None,
+            original_input: Some(title.to_string()),
+            assistant_preview: None,
+            request: None,
+            source: None,
+            expanded: None,
+            clarification_options: None,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn compute_day_seed_hash_is_stable_and_changes_with_updates() {
+        let card_a = sample_card(
+            "card-a",
+            "2026-02-06T10:00:00Z",
+            "2026-02-06T10:00:00Z",
+            "Card A",
+        );
+        let card_b = sample_card(
+            "card-b",
+            "2026-02-06T11:00:00Z",
+            "2026-02-06T11:00:00Z",
+            "Card B",
+        );
+        let hash_one = compute_day_seed_hash(&vec![card_a.clone(), card_b.clone()]);
+        let hash_two = compute_day_seed_hash(&vec![card_b.clone(), card_a.clone()]);
+        assert_eq!(hash_one, hash_two, "hash must be order-independent");
+
+        let mut card_b_updated = card_b.clone();
+        card_b_updated.updated_at = "2026-02-06T11:22:00Z".to_string();
+        let hash_three = compute_day_seed_hash(&vec![card_a, card_b_updated]);
+        assert_ne!(
+            hash_one, hash_three,
+            "hash must change when updatedAt changes"
+        );
+    }
+
+    #[test]
+    fn payload_placeholder_violation_detects_template_language() {
+        let payload = LlmSemanticRewritePayload {
+            semantic_mode: Some("statement_why".to_string()),
+            left: Some(LlmSemanticNodePayload {
+                headline: "short title".to_string(),
+                summary_line: None,
+                bullets: vec![],
+            }),
+            right: vec![LlmSemanticNodePayload {
+                headline: "standalone thought".to_string(),
+                summary_line: Some("optional one-liner".to_string()),
+                bullets: vec!["2-5 concise bullets".to_string()],
+            }],
+        };
+        let violation = payload_placeholder_violation(&payload);
+        assert!(violation.is_some());
+    }
+
+    #[test]
+    fn payload_placeholder_violation_allows_real_content() {
+        let payload = LlmSemanticRewritePayload {
+            semantic_mode: Some("statement_why".to_string()),
+            left: Some(LlmSemanticNodePayload {
+                headline: "Late meal timing raised overnight hunger".to_string(),
+                summary_line: Some("Front-loading calories reduced cravings.".to_string()),
+                bullets: vec!["A larger lunch made dinner easier to control".to_string()],
+            }),
+            right: vec![LlmSemanticNodePayload {
+                headline: "Earlier protein intake improved dinner decision quality".to_string(),
+                summary_line: Some(
+                    "The 5pm crash was weaker after a high-protein lunch".to_string(),
+                ),
+                bullets: vec!["Decision fatigue dropped during dinner rush".to_string()],
+            }],
+        };
+        let violation = payload_placeholder_violation(&payload);
+        assert!(violation.is_none());
+    }
+
+    #[test]
+    fn extract_agent_message_text_ignores_completed_user_message() {
+        let event = json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "userMessage",
+                    "content": [{ "type": "text", "text": "echoed prompt text" }]
+                }
+            }
+        });
+        let parsed = extract_agent_message_text_from_event(&event);
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn extract_agent_message_text_reads_completed_agent_message() {
+        let event = json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "agentMessage",
+                    "content": [{ "type": "text", "text": "{\"semanticMode\":\"statement_why\"}" }]
+                }
+            }
+        });
+        let parsed = extract_agent_message_text_from_event(&event);
+        assert_eq!(
+            parsed.as_deref(),
+            Some("{\"semanticMode\":\"statement_why\"}")
+        );
+    }
+
+    #[test]
+    fn extract_agent_message_text_reads_completed_assistant_message_shape() {
+        let event = json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "{\"semanticMode\":\"cause_effect\"}" }]
+                }
+            }
+        });
+        let parsed = extract_agent_message_text_from_event(&event);
+        assert_eq!(
+            parsed.as_deref(),
+            Some("{\"semanticMode\":\"cause_effect\"}")
+        );
+    }
+
+    #[test]
+    fn extract_agent_message_text_reads_turn_completed_result_payload() {
+        let event = json!({
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-1",
+                "result": {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{ "type": "output_text", "text": "{\"semanticMode\":\"action_reward\"}" }]
+                        }
+                    ]
+                }
+            }
+        });
+        let parsed = extract_agent_message_text_from_event(&event);
+        assert_eq!(
+            parsed.as_deref(),
+            Some("{\"semanticMode\":\"action_reward\"}")
+        );
+    }
+
+    #[test]
+    fn extract_delta_text_reads_codex_event_delta_shape() {
+        let event = json!({
+            "method": "codex/event/agent_message_content_delta",
+            "params": {
+                "conversationId": "thread-1",
+                "msg": {
+                    "delta": [{ "type": "output_text_delta", "text": "{\"semanticMode\":\"statement_why\"}" }]
+                }
+            }
+        });
+        let parsed = extract_delta_text(&event).expect("delta text");
+        assert!(parsed.contains("semanticMode"));
+    }
+
+    #[test]
+    fn extract_agent_message_text_reads_codex_event_item_completed() {
+        let event = json!({
+            "method": "codex/event/item_completed",
+            "params": {
+                "conversationId": "thread-1",
+                "msg": {
+                    "item": {
+                        "type": "AgentMessage",
+                        "content": [{ "type": "output_text", "text": "{\"semanticMode\":\"statement_why\"}" }]
+                    }
+                }
+            }
+        });
+        let parsed = extract_agent_message_text_from_event(&event);
+        assert_eq!(
+            parsed.as_deref(),
+            Some("{\"semanticMode\":\"statement_why\"}")
+        );
+    }
+
+    #[test]
+    fn extract_agent_message_text_reads_codex_event_agent_message() {
+        let event = json!({
+            "method": "codex/event/agent_message",
+            "params": {
+                "conversationId": "thread-1",
+                "msg": {
+                    "message": {
+                        "role": "assistant",
+                        "content": [{ "type": "output_text", "text": "{\"semanticMode\":\"cause_effect\"}" }]
+                    }
+                }
+            }
+        });
+        let parsed = extract_agent_message_text_from_event(&event);
+        assert_eq!(
+            parsed.as_deref(),
+            Some("{\"semanticMode\":\"cause_effect\"}")
+        );
+    }
+
+    #[test]
+    fn extract_error_message_from_event_includes_additional_details() {
+        let event = json!({
+            "method": "error",
+            "params": {
+                "threadId": "thread-1",
+                "error": {
+                    "message": "Reconnecting... 1/5",
+                    "additionalDetails": "unexpected status 401 Unauthorized"
+                }
+            }
+        });
+        let message = extract_error_message_from_event(&event).expect("error message");
+        assert!(message.contains("Reconnecting"));
+        assert!(message.contains("401 Unauthorized"));
+    }
+
+    #[test]
+    fn normalize_semantic_event_method_treats_error_as_turn_error() {
+        assert_eq!(normalize_semantic_event_method("error"), Some("TurnError"));
+    }
+
+    #[test]
+    fn semantic_auth_error_marker_matches_unauthorized_details() {
+        assert!(semantic_auth_error_marker(
+            "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"
+        ));
+        assert!(!semantic_auth_error_marker(
+            "Semantic rewrite returned empty output"
+        ));
+    }
+
+    #[test]
+    fn looks_like_prompt_echo_detects_identical_text() {
+        let prompt = "Rewrite card X";
+        assert!(looks_like_prompt_echo(prompt, prompt));
+        assert!(!looks_like_prompt_echo("response body", prompt));
+    }
+
+    #[test]
+    fn looks_like_prompt_echo_detects_template_marker_overlap() {
+        let prompt =
+            "Rewrite ONLY Card 1 below.\nReturn JSON only.\nstandalone thought, never a fragment";
+        let raw = "Rewrite ONLY Card 1 below.\nReturn JSON only.\nSchema:\n\"semanticMode\"\nstandalone thought, never a fragment";
+        assert!(looks_like_prompt_echo(raw, prompt));
+    }
+
+    #[test]
+    fn choose_semantic_delta_output_prefers_item_stream_when_json_valid() {
+        let item = "{\"semanticMode\":\"statement_why\"}";
+        let codex_content = "{ { \"semanticMode\":\"statement_why\" }";
+        let codex_agent = String::new();
+        let generic = String::new();
+
+        let chosen = choose_semantic_delta_output(
+            item,
+            codex_content,
+            codex_agent.as_str(),
+            generic.as_str(),
+        )
+        .expect("expected output");
+        assert_eq!(chosen.0, "agent_delta:item");
+        assert_eq!(chosen.1, item);
+    }
+
+    #[test]
+    fn choose_semantic_delta_output_falls_back_when_no_json_candidate() {
+        let chosen = choose_semantic_delta_output("   ", "first", "second", "third")
+            .expect("expected fallback output");
+        assert_eq!(chosen.0, "agent_delta:codex_content");
+        assert_eq!(chosen.1, "first");
+    }
 }
 
 fn normalize_node_key(node: &CausalNode) -> Option<String> {
@@ -2109,7 +4032,10 @@ fn normalize_node_key(node: &CausalNode) -> Option<String> {
         .or_else(|| Some(node.text.trim()))?;
     let normalized = candidate
         .to_lowercase()
-        .replace(|ch: char| !ch.is_ascii_alphanumeric() && !ch.is_whitespace(), " ")
+        .replace(
+            |ch: char| !ch.is_ascii_alphanumeric() && !ch.is_whitespace(),
+            " ",
+        )
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
@@ -2943,12 +4869,7 @@ pub(crate) fn build_causal_content(
     } else {
         input.trim().to_string()
     };
-    let left_parts = summarize_node_parts(
-        &left_text,
-        Some(enriched.title.as_str()),
-        88,
-        4,
-    );
+    let left_parts = summarize_node_parts(&left_text, Some(enriched.title.as_str()), 88, 4);
     let left_headline = derive_node_headline(
         Some(left_parts.title.as_str()),
         Some(enriched.title.as_str()),
@@ -3128,12 +5049,7 @@ fn build_primary_right_node(
     role: CausalNodeRole,
     rank: usize,
 ) -> CausalNode {
-    let headline = derive_node_headline(
-        title.as_deref(),
-        None,
-        text.as_str(),
-        120,
-    );
+    let headline = derive_node_headline(title.as_deref(), None, text.as_str(), 120);
     let summary_line = derive_summary_line(
         bullets
             .as_ref()
@@ -3182,7 +5098,8 @@ fn collect_right_nodes(
 
             if title.eq_ignore_ascii_case("completed orders") {
                 for row in extract_markdown_table_rows(body) {
-                    let parts = summarize_node_parts(row.as_str(), Some("Delivery outcome"), 100, 3);
+                    let parts =
+                        summarize_node_parts(row.as_str(), Some("Delivery outcome"), 100, 3);
                     right_nodes.push(build_primary_right_node(
                         format!("{card_id}:right:{index}"),
                         row,
@@ -3634,10 +5551,8 @@ fn polish_semantic_nodes(nodes: &mut Vec<CausalNode>, frame: CausalFrameProfile)
             headline
         };
 
-        let rescued_headline = rewrite_fragmentary_headline(
-            regenerated_headline.as_str(),
-            node.bullets.as_deref(),
-        );
+        let rescued_headline =
+            rewrite_fragmentary_headline(regenerated_headline.as_str(), node.bullets.as_deref());
 
         if is_weak_semantic_fragment(rescued_headline.as_str()) {
             low_quality_detected = true;
@@ -3664,10 +5579,7 @@ fn polish_semantic_nodes(nodes: &mut Vec<CausalNode>, frame: CausalFrameProfile)
             128,
         );
 
-        let quality = semantic_quality_score(
-            rescued_headline.as_str(),
-            summary_line.as_deref(),
-        );
+        let quality = semantic_quality_score(rescued_headline.as_str(), summary_line.as_deref());
         if quality < 58 {
             low_quality_detected = true;
             continue;
@@ -3697,7 +5609,8 @@ fn polish_semantic_nodes(nodes: &mut Vec<CausalNode>, frame: CausalFrameProfile)
     let should_attempt_rescue = matches!(
         frame,
         CausalFrameProfile::StatementWhy | CausalFrameProfile::QuestionResponse
-    ) && (low_quality_detected || polished.len() < std::cmp::min(3, original_nodes.len()));
+    ) && (low_quality_detected
+        || polished.len() < std::cmp::min(3, original_nodes.len()));
 
     if should_attempt_rescue {
         polished = rescue_low_quality_semantic_nodes(&original_nodes, frame, fallback.as_str());
@@ -3713,7 +5626,10 @@ fn polish_semantic_nodes(nodes: &mut Vec<CausalNode>, frame: CausalFrameProfile)
             );
             fallback_node.headline = Some(fallback_headline.clone());
             fallback_node.summary_line = derive_summary_line(
-                fallback_node.details.as_deref().or(Some(fallback_node.text.as_str())),
+                fallback_node
+                    .details
+                    .as_deref()
+                    .or(Some(fallback_node.text.as_str())),
                 fallback_headline.as_str(),
                 128,
             );
@@ -3748,10 +5664,7 @@ fn rescue_low_quality_semantic_nodes(
             .or(detail_sentence.as_deref())
             .unwrap_or(fallback);
 
-        let rescued_headline = rewrite_fragmentary_headline(
-            preferred,
-            original.bullets.as_deref(),
-        );
+        let rescued_headline = rewrite_fragmentary_headline(preferred, original.bullets.as_deref());
         if rescued_headline.is_empty()
             || is_weak_semantic_fragment(rescued_headline.as_str())
             || is_meta_boilerplate_headline(rescued_headline.as_str())
@@ -3970,7 +5883,11 @@ fn normalize_causal_node_titles(nodes: &mut [CausalNode]) {
             supplemental = nodes
                 .get(index + 1)
                 .and_then(|next| next.title.clone())
-                .or_else(|| nodes.get(index + 1).map(|next| truncate_summary(next.text.as_str(), 70)));
+                .or_else(|| {
+                    nodes
+                        .get(index + 1)
+                        .map(|next| truncate_summary(next.text.as_str(), 70))
+                });
         }
 
         if let Some(extra) = supplemental {
@@ -3980,11 +5897,7 @@ fn normalize_causal_node_titles(nodes: &mut [CausalNode]) {
                 extra.trim()
             );
             nodes[index].title = Some(normalize_title(merged.as_str(), 112));
-            if nodes[index]
-                .text
-                .trim()
-                .eq_ignore_ascii_case(trimmed)
-            {
+            if nodes[index].text.trim().eq_ignore_ascii_case(trimmed) {
                 nodes[index].text = merged;
             }
         }
@@ -4376,11 +6289,7 @@ fn merge_effect_nodes(card_id: &str, causal: &mut CausalCardContent, source_node
     let first_node = causal.right_nodes[first].clone();
     let second_node = causal.right_nodes[second].clone();
 
-    let merged_text = format!(
-        "{}\n• {}",
-        first_node.text.trim(),
-        second_node.text.trim()
-    );
+    let merged_text = format!("{}\n• {}", first_node.text.trim(), second_node.text.trim());
     let merged_headline = derive_node_headline(
         first_node
             .headline
@@ -4405,7 +6314,13 @@ fn merge_effect_nodes(card_id: &str, causal: &mut CausalCardContent, source_node
             merged_headline.as_str(),
             128,
         ),
-        title: Some(normalize_title(first_node.title.as_deref().unwrap_or(first_node.text.as_str()), 108)),
+        title: Some(normalize_title(
+            first_node
+                .title
+                .as_deref()
+                .unwrap_or(first_node.text.as_str()),
+            108,
+        )),
         bullets: {
             let mut merged_bullets = Vec::new();
             if let Some(first_bullets) = first_node.bullets.clone() {
@@ -4423,7 +6338,10 @@ fn merge_effect_nodes(card_id: &str, causal: &mut CausalCardContent, source_node
         },
         details: Some(merged_text),
         role: first_node.role.clone().or(second_node.role.clone()),
-        rank: first_node.rank.or(second_node.rank).or(Some((first + 1) as u32)),
+        rank: first_node
+            .rank
+            .or(second_node.rank)
+            .or(Some((first + 1) as u32)),
         group_type: Some(CausalGroupType::Primary),
         is_image_applicable: first_node.is_image_applicable || second_node.is_image_applicable,
         image: first_node.image.clone().or(second_node.image.clone()),
@@ -4599,8 +6517,7 @@ fn hydrate_card_images_from_catalog(
 }
 
 fn is_image_ready(image: Option<&CardImage>) -> bool {
-    image
-        .is_some_and(|value| value.status == ImageStatus::Ready && value.url.is_some())
+    image.is_some_and(|value| value.status == ImageStatus::Ready && value.url.is_some())
 }
 
 fn auto_image_target_node_id(card: &StreamCard) -> Option<String> {

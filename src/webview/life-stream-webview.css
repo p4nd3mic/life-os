@@ -36,12 +36,14 @@
   position: sticky;
   bottom: 0;
   z-index: 6;
-  background: linear-gradient(
-    180deg,
-    rgba(5, 8, 13, 0) 0%,
-    rgba(5, 8, 13, 0.78) 34%,
-    rgba(5, 8, 13, 0.95) 100%
-  );
+  background: var(--surface-messages);
+}
+
+.app.life-webview .composer {
+  background: var(--surface-messages);
+  box-shadow: none;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  backdrop-filter: none;
 }
 
 .app.life-webview .life-stream-message-list {

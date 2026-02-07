@@ -35,6 +35,20 @@
   gap: clamp(20px, 3.6vw, 52px);
 }
 
+.life-causal-card--vertical .life-causal-card__labels {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.life-causal-card--vertical .life-causal-card__lane-label--right {
+  justify-self: start;
+}
+
+.life-causal-card__lanes--vertical {
+  grid-template-columns: 1fr;
+  gap: 28px;
+}
+
 .life-causal-card__lane {
   min-width: 0;
   display: flex;
@@ -42,6 +56,29 @@
   gap: 12px;
   z-index: 2;
   contain: layout paint;
+}
+
+.life-causal-card--vertical .life-causal-card__lane--left {
+  max-width: min(980px, 100%);
+}
+
+.life-causal-card--vertical .life-causal-card__lane--right {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 14px;
+  align-items: start;
+  padding-top: 2px;
+}
+
+.life-causal-card--vertical .life-causal-card__lane--right .life-causal-card__node {
+  min-height: 108px;
+}
+
+.life-causal-card--vertical
+  .life-causal-card__lane--right
+  .life-causal-card__node.is-overflow-summary {
+  grid-column: 1 / -1;
+  margin-top: 2px;
 }
 
 .life-causal-card__links {
@@ -67,6 +104,12 @@
   stroke-opacity: 0.44;
 }
 
+.life-causal-card__path.is-trunk {
+  stroke-width: 1.8;
+  stroke-opacity: 0.68;
+  stroke-dasharray: 2 4;
+}
+
 .life-causal-card__head {
   fill: rgba(248, 213, 102, 0.97);
   stroke: rgba(255, 236, 170, 0.86);
@@ -79,6 +122,7 @@
 }
 
 .life-causal-card__node {
+  --life-node-stagger-y: 0px;
   position: relative;
   overflow: hidden;
   border-radius: 12px;
@@ -97,6 +141,7 @@
     background 160ms ease;
   will-change: transform;
   cursor: pointer;
+  transform: translate3d(0, var(--life-node-stagger-y), 0);
 }
 
 .life-causal-card__node--left {
@@ -118,6 +163,7 @@
     rgba(9, 15, 24, 0.96) 0%,
     rgba(9, 15, 24, 0.84) 100%
   );
+  transform: translate3d(0, var(--life-node-stagger-y), 0) scale(1.01);
 }
 
 .life-causal-card__node-rank {
@@ -146,6 +192,9 @@
   letter-spacing: 0.001em;
   text-wrap: wrap;
   word-break: normal;
+  text-align: center;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .life-causal-card__node--left .life-causal-card__node-title {
@@ -199,8 +248,8 @@
 
 .life-causal-card__overflow-list {
   margin: 4px 0 0;
-  padding-left: 0;
-  padding-right: 4px;
+  padding-left: 5px;
+  padding-right: 8px;
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -221,7 +270,8 @@
 
 .life-causal-card__overflow-number {
   color: rgba(165, 201, 238, 0.88);
-  min-width: 1.45rem;
+  min-width: 1.92rem;
+  padding-left: 2px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -428,6 +478,22 @@
   .life-causal-card__lanes {
     grid-template-columns: 1fr;
     gap: 14px;
+  }
+
+  .life-causal-card--vertical .life-causal-card__lane--right {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .life-causal-card--vertical
+    .life-causal-card__lane--right
+    .life-causal-card__node.is-overflow-summary {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .life-causal-card--vertical .life-causal-card__lane--right {
+    grid-template-columns: 1fr;
   }
 
   .life-causal-card__links {

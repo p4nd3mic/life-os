@@ -14,8 +14,10 @@ import { useLifeStream } from "../hooks/useLifeStream";
 import { taskDockStore } from "../state/taskDockStore";
 import type {
   CausalRestructureAction,
+  DayThreadDebugSummary,
   DomainId,
   EntityRef,
+  LifeStreamAuthHealth,
   ImageAutoFetchMode,
   ImageAutoFetchSummary,
   ImageAttachResult,
@@ -81,6 +83,20 @@ type LifeStreamContextValue = {
   };
   regenerateSemanticsForCurrentDate: () => Promise<SemanticRegenerationResult | null>;
   clearSemanticRegenerationStatus: () => void;
+  dayThreadDebugStatus: {
+    state: "idle" | "running" | "done" | "error";
+    message?: string;
+    details?: DayThreadDebugSummary;
+  };
+  inspectDayThreadForCurrentDate: () => Promise<DayThreadDebugSummary | null>;
+  resetDayThreadAndRebuildForCurrentDate: () => Promise<SemanticRegenerationResult | null>;
+  clearDayThreadDebugStatus: () => void;
+  authHealthStatus: {
+    state: "idle" | "checking" | "healthy" | "unauthorized" | "unknown" | "error";
+    message?: string;
+    details?: LifeStreamAuthHealth;
+  };
+  checkAuthHealth: () => Promise<LifeStreamAuthHealth | null>;
   imageAutoFetchStatus: {
     state: "idle" | "running" | "done" | "error";
     message?: string;
@@ -94,12 +110,14 @@ type LifeStreamContextValue = {
     items: TaskDockItem[];
     filter: TaskDockFilter;
     collapsed: boolean;
+    hidden: boolean;
   };
   addTaskDockItem: (text: string) => void;
   toggleTaskDockItem: (id: string) => void;
   moveTaskDockItem: (id: string, direction: -1 | 1, visibleIds: string[]) => void;
   setTaskDockFilter: (filter: TaskDockFilter) => void;
   setTaskDockCollapsed: (collapsed: boolean) => void;
+  setTaskDockHidden: (hidden: boolean) => void;
 };
 
 type LifeStreamSubmitOptions = {
@@ -134,6 +152,9 @@ export function LifeStreamProvider({
     clarify,
     restructure,
     regenerateSemantics,
+    getDayThreadDebug,
+    getAuthHealth,
+    resetDayThreadAndRebuild,
     getImageCandidates,
     attachImage,
     autoFetchImages,
@@ -160,12 +181,25 @@ export function LifeStreamProvider({
     state: "idle" | "running" | "done" | "error";
     message?: string;
   }>({ state: "idle" });
+  const [dayThreadDebugStatus, setDayThreadDebugStatus] = useState<{
+    state: "idle" | "running" | "done" | "error";
+    message?: string;
+    details?: DayThreadDebugSummary;
+  }>({ state: "idle" });
+  const [authHealthStatus, setAuthHealthStatus] = useState<{
+    state: "idle" | "checking" | "healthy" | "unauthorized" | "unknown" | "error";
+    message?: string;
+    details?: LifeStreamAuthHealth;
+  }>({ state: "idle" });
   const [imageAutoFetchStatus, setImageAutoFetchStatus] = useState<{
     state: "idle" | "running" | "done" | "error";
     message?: string;
   }>({ state: "idle" });
   const semanticStatusTimerRef = useRef<number | null>(null);
   const imageAutoFetchStatusTimerRef = useRef<number | null>(null);
+  const authHealthRetryTimerRef = useRef<number | null>(null);
+  const authHealthRetryAttemptsRef = useRef(0);
+  const authHealthInFlightRef = useRef(false);
 
   const persistFilters = useCallback((next: Set<DomainId>) => {
     setActiveFilters(next);
@@ -207,6 +241,10 @@ export function LifeStreamProvider({
     setSemanticRegenerationStatus({ state: "idle" });
   }, []);
 
+  const clearDayThreadDebugStatus = useCallback(() => {
+    setDayThreadDebugStatus({ state: "idle" });
+  }, []);
+
   const scheduleSemanticStatusClear = useCallback((delayMs = 3200) => {
     if (semanticStatusTimerRef.current) {
       window.clearTimeout(semanticStatusTimerRef.current);
@@ -215,6 +253,13 @@ export function LifeStreamProvider({
       setSemanticRegenerationStatus({ state: "idle" });
       semanticStatusTimerRef.current = null;
     }, delayMs);
+  }, []);
+
+  const clearAuthHealthRetryTimer = useCallback(() => {
+    if (authHealthRetryTimerRef.current) {
+      window.clearTimeout(authHealthRetryTimerRef.current);
+      authHealthRetryTimerRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -226,6 +271,10 @@ export function LifeStreamProvider({
       if (imageAutoFetchStatusTimerRef.current) {
         window.clearTimeout(imageAutoFetchStatusTimerRef.current);
         imageAutoFetchStatusTimerRef.current = null;
+      }
+      if (authHealthRetryTimerRef.current) {
+        window.clearTimeout(authHealthRetryTimerRef.current);
+        authHealthRetryTimerRef.current = null;
       }
     };
   }, []);
@@ -258,32 +307,245 @@ export function LifeStreamProvider({
         state: "error",
         message: "⚠️ Failed to regenerate semantics.",
       });
-      scheduleSemanticStatusClear(4200);
       return null;
     }
 
+    const hasRetainedPreviousNodes = result.errors.some((error) =>
+      error.toLowerCase().includes("llm output invalid, retained previous nodes")
+    );
+    const authError = result.errors.find((error) =>
+      isSemanticAuthError(error)
+    );
+    if (authError) {
+      setAuthHealthStatus({
+        state: "unauthorized",
+        message: "🔴 Codex auth invalid for Life workspace",
+        details: {
+          state: "unauthorized",
+          message: authError,
+          checkedAt: new Date().toISOString(),
+        },
+      });
+    }
+    const llmLogStatusSuffix =
+      result.llmLogStatus === "success"
+        ? " · 🧾 LLM log saved"
+        : result.llmLogStatus === "failed"
+          ? " · ⚠️ LLM log failed"
+          : "";
+
     if (result.failed > 0 && result.updated === 0) {
-      const firstError = result.errors[0];
-      const message = firstError
-        ? `⚠️ Rebuild failed (0 updated, ${result.failed} failed): ${firstError}`
-        : `⚠️ Rebuild failed (0 updated, ${result.failed} failed).`;
+      const message = authError
+        ? `🔐 Rebuild blocked: Codex auth failed in Life workspace (401 / missing bearer token). Run \`codex login\` in /Volumes/YouTube 4TB/Life, then rebuild.${llmLogStatusSuffix}`
+        : hasRetainedPreviousNodes
+          ? `⚠️ LLM output invalid, retained previous nodes.${llmLogStatusSuffix}`
+          : (() => {
+              const firstError = result.errors[0];
+              const base = firstError
+                ? `⚠️ Rebuild failed (0 updated, ${result.failed} failed): ${firstError}`
+                : `⚠️ Rebuild failed (0 updated, ${result.failed} failed).`;
+              return `${base}${llmLogStatusSuffix}`;
+            })();
       setSemanticRegenerationStatus({ state: "error", message });
-      scheduleSemanticStatusClear(5200);
       return result;
     }
 
     if (result.failed > 0) {
-      const message = `🟡 Rebuilt ${result.updated} · failed ${result.failed}`;
+      const message = authError
+        ? `🔐 Partial rebuild blocked by Codex auth (401 / missing bearer token). Re-auth with \`codex login\` in /Volumes/YouTube 4TB/Life.${llmLogStatusSuffix}`
+        : hasRetainedPreviousNodes
+          ? `🟡 LLM output invalid, retained previous nodes on ${result.failed} card(s) · rebuilt ${result.updated}${llmLogStatusSuffix}`
+          : `🟡 Rebuilt ${result.updated} · failed ${result.failed}${llmLogStatusSuffix}`;
       setSemanticRegenerationStatus({ state: "done", message });
-      scheduleSemanticStatusClear(4200);
       return result;
     }
 
-    const message = `✅ Rebuilt ${result.updated}`;
+    const message = `✅ Rebuilt ${result.updated}${llmLogStatusSuffix}`;
     setSemanticRegenerationStatus({ state: "done", message });
     scheduleSemanticStatusClear(3200);
     return result;
   }, [cards, regenerateSemantics, scheduleSemanticStatusClear, workspaceId]);
+
+  const inspectDayThreadForCurrentDate = useCallback(async () => {
+    if (!workspaceId) {
+      return null;
+    }
+    setDayThreadDebugStatus({
+      state: "running",
+      message: "🧪 Inspecting day-thread runtime + logs…",
+    });
+
+    const summary = await getDayThreadDebug(currentDate);
+    if (!summary) {
+      setDayThreadDebugStatus({
+        state: "error",
+        message: "⚠️ Unable to read day-thread debug state.",
+      });
+      return null;
+    }
+
+    const promptEchoCount = summary.recentLogs.filter(
+      (item) => item.promptEchoDetected
+    ).length;
+    const latestLog = summary.recentLogs[0];
+    const traceStats = latestLog?.traceStats;
+    const traceFlags = traceStats
+      ? ` · trace Δ${traceStats.agentDeltaSeen ? "✅" : "❌"} msg${traceStats.agentCompletedSeen ? "✅" : "❌"} err${traceStats.errorSeen ? "✅" : "❌"} done${traceStats.turnCompletedSeen ? "✅" : "❌"}`
+      : "";
+    const threadShort = summary.threadId
+      ? `${summary.threadId.slice(0, 10)}…`
+      : "none";
+    const failureSource =
+      summary.lastFailureReason ?? traceStats?.firstErrorMessage;
+    const failureSnippet = failureSource
+      ? ` · last fail: ${failureSource.slice(0, 96)}`
+      : "";
+    const failureCardSnippet = summary.lastFailureCardId
+      ? ` · card ${summary.lastFailureCardId.slice(0, 18)}…`
+      : "";
+    const promptEchoSnippet =
+      promptEchoCount > 0 ? ` · ⚠️ prompt-echo ${promptEchoCount}` : "";
+    const traceActionSnippet = latestLog ? " · Open trace summary" : "";
+    const message = `🧪 ${summary.date} · thread ${threadShort} · logs ${summary.totalLogs} (✅${summary.successfulLogs}/❌${summary.failedLogs})${traceFlags}${promptEchoSnippet}${failureCardSnippet}${failureSnippet}${traceActionSnippet}`;
+
+    setDayThreadDebugStatus({
+      state: "done",
+      message,
+      details: summary,
+    });
+    return summary;
+  }, [currentDate, getDayThreadDebug, workspaceId]);
+
+  const resetDayThreadAndRebuildForCurrentDate = useCallback(async () => {
+    if (!workspaceId) {
+      return null;
+    }
+    setDayThreadDebugStatus({
+      state: "running",
+      message: "♻️ Resetting day-thread and rebuilding semantics…",
+    });
+    const result = await resetDayThreadAndRebuild(currentDate, true);
+    if (!result) {
+      setDayThreadDebugStatus({
+        state: "error",
+        message: "⚠️ Reset day-thread + rebuild failed.",
+      });
+      return null;
+    }
+    setDayThreadDebugStatus({
+      state: result.failed > 0 ? "error" : "done",
+      message:
+        result.failed > 0
+          ? `⚠️ Reset complete, rebuilt ${result.updated}, failed ${result.failed}`
+          : `✅ Reset complete, rebuilt ${result.updated}`,
+    });
+    return result;
+  }, [currentDate, resetDayThreadAndRebuild, workspaceId]);
+
+  const checkAuthHealth = useCallback(async () => {
+    if (!workspaceId) {
+      return null;
+    }
+    if (authHealthInFlightRef.current) {
+      return null;
+    }
+    authHealthInFlightRef.current = true;
+    setAuthHealthStatus({
+      state: "checking",
+      message: "🩺 Checking Codex auth…",
+    });
+    try {
+      const result = await getAuthHealth();
+      if (!result) {
+        setAuthHealthStatus({
+          state: "error",
+          message: "⚠️ Auth health check failed.",
+        });
+        return null;
+      }
+      const nextState =
+        result.state === "healthy"
+          ? "healthy"
+          : result.state === "unauthorized"
+            ? "unauthorized"
+            : result.state === "unknown"
+              ? "unknown"
+              : "error";
+      const prefix =
+        nextState === "healthy"
+          ? "🟢"
+          : nextState === "unauthorized"
+            ? "🔴"
+            : nextState === "unknown"
+              ? "🟡"
+              : "⚠️";
+      setAuthHealthStatus({
+        state: nextState,
+        message: `${prefix} ${result.message}`,
+        details: result,
+      });
+      return result;
+    } finally {
+      authHealthInFlightRef.current = false;
+    }
+  }, [getAuthHealth, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId) {
+      setAuthHealthStatus({ state: "idle" });
+      authHealthRetryAttemptsRef.current = 0;
+      clearAuthHealthRetryTimer();
+      return;
+    }
+    authHealthRetryAttemptsRef.current = 0;
+    clearAuthHealthRetryTimer();
+    void checkAuthHealth();
+  }, [checkAuthHealth, clearAuthHealthRetryTimer, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId) return;
+
+    const message = authHealthStatus.message?.toLowerCase() ?? "";
+    const waitingForSession =
+      authHealthStatus.state === "unknown" &&
+      (message.includes("workspace session unavailable") ||
+        message.includes("session unavailable"));
+
+    if (waitingForSession) {
+      if (authHealthRetryAttemptsRef.current >= 10) {
+        clearAuthHealthRetryTimer();
+        return;
+      }
+
+      clearAuthHealthRetryTimer();
+      const delayMs = Math.min(
+        1600 + authHealthRetryAttemptsRef.current * 500,
+        5200,
+      );
+      authHealthRetryTimerRef.current = window.setTimeout(() => {
+        authHealthRetryTimerRef.current = null;
+        authHealthRetryAttemptsRef.current += 1;
+        void checkAuthHealth();
+      }, delayMs);
+      return;
+    }
+
+    if (
+      authHealthStatus.state === "healthy" ||
+      authHealthStatus.state === "unauthorized" ||
+      authHealthStatus.state === "error" ||
+      (authHealthStatus.state === "unknown" && !message.includes("session unavailable"))
+    ) {
+      clearAuthHealthRetryTimer();
+      authHealthRetryAttemptsRef.current = 0;
+    }
+  }, [
+    authHealthStatus.message,
+    authHealthStatus.state,
+    checkAuthHealth,
+    clearAuthHealthRetryTimer,
+    workspaceId,
+  ]);
 
   const clearImageAutoFetchStatus = useCallback(() => {
     setImageAutoFetchStatus({ state: "idle" });
@@ -453,6 +715,10 @@ export function LifeStreamProvider({
     taskDockStore.setCollapsed(collapsed);
   }, []);
 
+  const setTaskDockHidden = useCallback((hidden: boolean) => {
+    taskDockStore.setHidden(hidden);
+  }, []);
+
   const value: LifeStreamContextValue = {
     cards,
     filteredCards,
@@ -476,6 +742,12 @@ export function LifeStreamProvider({
     semanticRegenerationStatus,
     regenerateSemanticsForCurrentDate,
     clearSemanticRegenerationStatus,
+    dayThreadDebugStatus,
+    inspectDayThreadForCurrentDate,
+    resetDayThreadAndRebuildForCurrentDate,
+    clearDayThreadDebugStatus,
+    authHealthStatus,
+    checkAuthHealth,
     imageAutoFetchStatus,
     autoFetchImagesForCurrentDate,
     clearImageAutoFetchStatus,
@@ -487,12 +759,23 @@ export function LifeStreamProvider({
     moveTaskDockItem,
     setTaskDockFilter,
     setTaskDockCollapsed,
+    setTaskDockHidden,
   };
 
   return (
     <LifeStreamContext.Provider value={value}>
       {children}
     </LifeStreamContext.Provider>
+  );
+}
+
+function isSemanticAuthError(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    normalized.includes("missing bearer") ||
+    normalized.includes("unauthorized") ||
+    normalized.includes("authentication in header") ||
+    (normalized.includes("401") && normalized.includes("api.openai.com"))
   );
 }
 

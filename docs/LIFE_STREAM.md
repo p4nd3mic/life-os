@@ -185,10 +185,17 @@ Life Stream now supports two image-fetch workflows for the current date:
 
 - `🖼️ Fetch images (ask)` → queues review tasks, does not auto-attach.
 - `⚡ Auto-apply images` → imports top candidate, attaches to card/node, updates catalog.
+- Cause/effect cards render in a vertical-first graph flow (source on top, outcomes below).
 
 These are available from:
 
 - `src/features/life-stream/components/navigation/LifeStreamHeaderControls.tsx`
+
+The native cause/effect renderer now defaults to a top-down orientation:
+
+- source/statement card on top
+- responses/effects in compact rows below
+- curved arrows routed downward between rows
 
 and backed by:
 

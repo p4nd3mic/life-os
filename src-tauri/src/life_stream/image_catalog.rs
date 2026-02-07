@@ -66,16 +66,14 @@ pub(crate) async fn load_catalog(obsidian_root: &Path) -> Result<ImageCatalog, S
     let content = fs::read_to_string(&path)
         .await
         .map_err(|error| format!("Failed reading image catalog {}: {}", path.display(), error))?;
-    serde_json::from_str::<ImageCatalog>(&content).map_err(|error| {
-        format!(
-            "Failed parsing image catalog {}: {}",
-            path.display(),
-            error
-        )
-    })
+    serde_json::from_str::<ImageCatalog>(&content)
+        .map_err(|error| format!("Failed parsing image catalog {}: {}", path.display(), error))
 }
 
-pub(crate) async fn save_catalog(obsidian_root: &Path, catalog: &ImageCatalog) -> Result<(), String> {
+pub(crate) async fn save_catalog(
+    obsidian_root: &Path,
+    catalog: &ImageCatalog,
+) -> Result<(), String> {
     let path = catalog_path(obsidian_root);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await.map_err(|error| {
@@ -89,10 +87,7 @@ pub(crate) async fn save_catalog(obsidian_root: &Path, catalog: &ImageCatalog) -
 
     let payload = serde_json::to_string_pretty(catalog)
         .map_err(|error| format!("Failed serializing image catalog: {}", error))?;
-    let temp_path = path.with_extension(format!(
-        "tmp-{}",
-        Uuid::new_v4().to_string()
-    ));
+    let temp_path = path.with_extension(format!("tmp-{}", Uuid::new_v4().to_string()));
     fs::write(&temp_path, payload).await.map_err(|error| {
         format!(
             "Failed writing temporary image catalog {}: {}",
@@ -120,7 +115,10 @@ pub(crate) fn primary_asset_path(catalog: &ImageCatalog, entity_key: &str) -> Op
         }
     }
 
-    entity.assets.first().map(|asset| asset.relative_path.clone())
+    entity
+        .assets
+        .first()
+        .map(|asset| asset.relative_path.clone())
 }
 
 pub(crate) fn primary_asset_path_for_context(
@@ -291,8 +289,16 @@ mod tests {
     #[test]
     fn upsert_entity_asset_dedupes_by_hash() {
         let mut catalog = ImageCatalog::default();
-        let first = sample_asset("asset-1", "hash-1", "Assets/Entities/media/cowboy/first.jpg");
-        let second = sample_asset("asset-2", "hash-1", "Assets/Entities/media/cowboy/second.jpg");
+        let first = sample_asset(
+            "asset-1",
+            "hash-1",
+            "Assets/Entities/media/cowboy/first.jpg",
+        );
+        let second = sample_asset(
+            "asset-2",
+            "hash-1",
+            "Assets/Entities/media/cowboy/second.jpg",
+        );
 
         upsert_entity_asset(
             &mut catalog,

@@ -381,15 +381,12 @@ fn test_build_causal_content_filters_meta_boilerplate_nodes() {
         &enriched,
     );
 
-    assert!(causal
-        .right_nodes
-        .iter()
-        .all(|node| !node
-            .headline
-            .as_deref()
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains("jmwillis")));
+    assert!(causal.right_nodes.iter().all(|node| !node
+        .headline
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("jmwillis")));
 }
 
 #[test]

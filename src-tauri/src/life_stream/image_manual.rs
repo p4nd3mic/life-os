@@ -10,10 +10,8 @@ use uuid::Uuid;
 use super::images::{CandidateProviderConfig, CandidateProviderRegistry};
 use super::types::{CardType, CausalNode, DomainId, ImageAssetRecord, ImageCandidate, StreamCard};
 
-const DEFAULT_EXTERNAL_PHOTO_ROOTS: &[&str] = &[
-    "/Volumes/YouTube 4TB/photos",
-    "/Volumes/YouTube 4TB/Photos",
-];
+const DEFAULT_EXTERNAL_PHOTO_ROOTS: &[&str] =
+    &["/Volumes/YouTube 4TB/photos", "/Volumes/YouTube 4TB/Photos"];
 const MAX_CANDIDATES: usize = 64;
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif"];
 
@@ -45,36 +43,47 @@ pub(crate) fn resolve_entity_for_card(card: &StreamCard, node_id: Option<&str>) 
         .or_else(|| card.original_input.clone());
 
     let node_entity = target_node.and_then(|node| node.entity.clone());
-    let card_entity = card.entities.as_ref().and_then(|entities| entities.first().cloned());
+    let card_entity = card
+        .entities
+        .as_ref()
+        .and_then(|entities| entities.first().cloned());
     let selected_entity = node_entity.as_ref().or(card_entity.as_ref());
     let wiki_entity = node_entity
         .as_ref()
         .and_then(|entity| parse_entity_from_link(entity.link.as_deref()))
-        .or_else(|| parse_entity_from_text(target_node.map(|node| node.text.as_str()).unwrap_or("")));
+        .or_else(|| {
+            parse_entity_from_text(target_node.map(|node| node.text.as_str()).unwrap_or(""))
+        });
     let fallback_wiki = parse_entity_from_text(card.title.as_str())
         .or_else(|| parse_entity_from_text(card.original_input.as_deref().unwrap_or("")));
 
-    let (entity_type, entity_name) = if let Some(entity) = node_entity.as_ref().or(card_entity.as_ref()) {
-        let resolved_type = normalize_entity_type(
-            Some(entity.entity_type.as_str()),
-            Some(card.card_type.clone()),
-            Some(card.domain.clone()),
-        );
-        let resolved_name = entity
-            .name
-            .trim()
-            .to_string();
-        (resolved_type, resolved_name)
-    } else if let Some((wiki_type, wiki_name)) = wiki_entity.or(fallback_wiki) {
-        let resolved_type = normalize_entity_type(Some(wiki_type.as_str()), Some(card.card_type.clone()), Some(card.domain.clone()));
-        (resolved_type, wiki_name)
-    } else {
-        let fallback_type = normalize_entity_type(None, Some(card.card_type.clone()), Some(card.domain.clone()));
-        let fallback_name = target_node
-            .map(|node| summarize_entity_name(&node.text))
-            .unwrap_or_else(|| summarize_entity_name(&card.title));
-        (fallback_type, fallback_name)
-    };
+    let (entity_type, entity_name) =
+        if let Some(entity) = node_entity.as_ref().or(card_entity.as_ref()) {
+            let resolved_type = normalize_entity_type(
+                Some(entity.entity_type.as_str()),
+                Some(card.card_type.clone()),
+                Some(card.domain.clone()),
+            );
+            let resolved_name = entity.name.trim().to_string();
+            (resolved_type, resolved_name)
+        } else if let Some((wiki_type, wiki_name)) = wiki_entity.or(fallback_wiki) {
+            let resolved_type = normalize_entity_type(
+                Some(wiki_type.as_str()),
+                Some(card.card_type.clone()),
+                Some(card.domain.clone()),
+            );
+            (resolved_type, wiki_name)
+        } else {
+            let fallback_type = normalize_entity_type(
+                None,
+                Some(card.card_type.clone()),
+                Some(card.domain.clone()),
+            );
+            let fallback_name = target_node
+                .map(|node| summarize_entity_name(&node.text))
+                .unwrap_or_else(|| summarize_entity_name(&card.title));
+            (fallback_type, fallback_name)
+        };
 
     let entity_slug = slugify(&entity_name);
     let entity_key = format!("{entity_type}:{entity_slug}");
@@ -164,7 +173,8 @@ pub(crate) async fn find_image_candidates(
             continue;
         }
         let is_managed = directory.starts_with(obsidian_root);
-        let is_runtime_inbox = directory.starts_with(obsidian_root.join("Runtime").join("ImageInbox"));
+        let is_runtime_inbox =
+            directory.starts_with(obsidian_root.join("Runtime").join("ImageInbox"));
         let mut files = collect_image_files(&directory)?;
         for file in files.drain(..) {
             let canonical = file.canonicalize().unwrap_or_else(|_| file.clone());
@@ -172,7 +182,10 @@ pub(crate) async fn find_image_candidates(
             if !seen.insert(key) {
                 continue;
             }
-            let Some(file_name) = file.file_name().map(|value| value.to_string_lossy().to_string()) else {
+            let Some(file_name) = file
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+            else {
                 continue;
             };
             let metadata = std::fs::metadata(&file).ok();
@@ -558,7 +571,10 @@ fn upsert_embed_block(mut lines: Vec<String>, relative_path: &str) -> Vec<String
     let embed_line = format!("![[{relative_path}]]");
 
     if let Some(index) = lines.iter().position(|line| line.trim() == marker) {
-        if lines.get(index + 1).is_some_and(|line| line.trim().starts_with("![[")) {
+        if lines
+            .get(index + 1)
+            .is_some_and(|line| line.trim().starts_with("![["))
+        {
             lines[index + 1] = embed_line;
         } else {
             lines.insert(index + 1, embed_line);
@@ -1059,14 +1075,16 @@ mod tests {
 
     #[test]
     fn parse_entity_from_wiki_link() {
-        let parsed = parse_entity_from_link(Some("[[Entities/Media/Cowboy Bebop]]")).expect("parsed");
+        let parsed =
+            parse_entity_from_link(Some("[[Entities/Media/Cowboy Bebop]]")).expect("parsed");
         assert_eq!(parsed.0, "Media");
         assert_eq!(parsed.1, "Cowboy Bebop");
     }
 
     #[test]
     fn normalize_entity_type_from_card_type() {
-        let entity_type = normalize_entity_type(None, Some(CardType::MediaAdd), Some(DomainId::General));
+        let entity_type =
+            normalize_entity_type(None, Some(CardType::MediaAdd), Some(DomainId::General));
         assert_eq!(entity_type, "media");
     }
 

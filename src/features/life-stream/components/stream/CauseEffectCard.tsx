@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type {
@@ -23,6 +24,7 @@ type CauseEffectCardProps = {
   cardType: CardType;
   cardTitle?: string;
   causal: CausalCardContent;
+  layoutOrientation?: "horizontal" | "vertical";
   onOpenTranscript?: () => void;
   onRestructure: (
     action: CausalRestructureAction,
@@ -48,7 +50,8 @@ function pathsEqual(previous: GraphArrowPath[], next: GraphArrowPath[]): boolean
       prev.id !== current.id ||
       prev.d !== current.d ||
       prev.headD !== current.headD ||
-      prev.dimmed !== current.dimmed
+      prev.dimmed !== current.dimmed ||
+      prev.isTrunk !== current.isTrunk
     ) {
       return false;
     }
@@ -283,6 +286,8 @@ function NodeCard({
   node,
   side,
   index,
+  layoutOrientation,
+  staggerOffsetPx,
   fallbackTitle,
   selected,
   setRef,
@@ -301,6 +306,8 @@ function NodeCard({
   onRequestNodeImage?: (nodeId: string) => void;
   onPreviewImage?: (imageSrc: string, alt: string) => void;
   onOpenTranscript?: () => void;
+  layoutOrientation: "horizontal" | "vertical";
+  staggerOffsetPx?: number;
 }) {
   const longPressRef = useRef<number | null>(null);
   const didLongPressRef = useRef(false);
@@ -392,6 +399,14 @@ function NodeCard({
         .filter(Boolean)
         .join(" ")}
       data-node-id={node.id}
+      style={
+        {
+          "--life-node-stagger-y":
+            side === "right" && layoutOrientation === "vertical"
+              ? `${staggerOffsetPx ?? 0}px`
+              : "0px",
+        } as CSSProperties
+      }
       onPointerDown={handlePointerDown}
       onPointerUp={clearLongPress}
       onPointerLeave={clearLongPress}
@@ -519,6 +534,7 @@ export function CauseEffectCard({
   cardType,
   cardTitle,
   causal,
+  layoutOrientation = "vertical",
   onOpenTranscript,
   onRestructure,
   onRequestNodeImage,
@@ -528,6 +544,7 @@ export function CauseEffectCard({
     [cardId],
   );
   const semanticMode = causal.semanticMode ?? inferSemanticModeFromNodes(causal.leftNodes);
+  const isVerticalLayout = layoutOrientation === "vertical";
 
   const [paths, setPaths] = useState<GraphArrowPath[]>([]);
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
@@ -620,6 +637,19 @@ export function CauseEffectCard({
     ];
   }, [overflowNode, primaryRightNodes]);
 
+  const rightNodeStaggerOffsets = useMemo(() => {
+    if (!isVerticalLayout) {
+      return visibleRightNodes.map(() => 0);
+    }
+    const pattern = [-8, 7, -4, 10, -2, 6];
+    return visibleRightNodes.map((node, index) => {
+      if (node.groupType === "overflow_summary") {
+        return 5;
+      }
+      return pattern[index % pattern.length];
+    });
+  }, [isVerticalLayout, visibleRightNodes]);
+
   const leftNodeIds = useMemo(
     () => new Set(causal.leftNodes.map((node) => node.id)),
     [causal.leftNodes],
@@ -649,16 +679,29 @@ export function CauseEffectCard({
       return base;
     }
 
+    const overflowFromId = isVerticalLayout
+      ? primaryRightNodes[Math.floor((primaryRightNodes.length - 1) / 2)]?.id ??
+        causal.leftNodes[0].id
+      : causal.leftNodes[0].id;
+
     return [
       ...base,
       {
         id: `${cardId}:link:overflow`,
-        fromId: causal.leftNodes[0].id,
+        fromId: overflowFromId,
         toId: overflowNode.id,
         strength: 0.84,
       },
     ];
-  }, [cardId, causal.leftNodes, causal.links, overflowNode, visibleRightNodeIds]);
+  }, [
+    cardId,
+    causal.leftNodes,
+    causal.links,
+    isVerticalLayout,
+    overflowNode,
+    primaryRightNodes,
+    visibleRightNodeIds,
+  ]);
 
   const registerLeftRef = useCallback((nodeId: string, element: HTMLDivElement | null) => {
     if (element) {
@@ -684,13 +727,16 @@ export function CauseEffectCard({
     }
 
     const containerBounds = container.getBoundingClientRect();
-    const sourceCounter = new Map<string, number>();
-    const sourceTotals = new Map<string, number>();
-    for (const link of visibleLinks) {
-      sourceTotals.set(link.fromId, (sourceTotals.get(link.fromId) ?? 0) + 1);
-    }
+    type LinkGeometry = {
+      linkId: string;
+      fromId: string;
+      startX: number;
+      startY: number;
+      endX: number;
+      endY: number;
+    };
 
-    const nextPaths: GraphArrowPath[] = [];
+    const linkGeometries: LinkGeometry[] = [];
     for (const link of visibleLinks) {
       const fromElement =
         leftNodeRefs.current.get(link.fromId) ?? rightNodeRefs.current.get(link.fromId);
@@ -703,33 +749,136 @@ export function CauseEffectCard({
 
       const fromBounds = fromElement.getBoundingClientRect();
       const toBounds = toElement.getBoundingClientRect();
-      const startX = fromBounds.right - containerBounds.left + 0.5;
-      const startY = fromBounds.top - containerBounds.top + fromBounds.height / 2;
-      const endX = toBounds.left - containerBounds.left - 0.5;
-      const endY = toBounds.top - containerBounds.top + toBounds.height / 2;
+      const startX = isVerticalLayout
+        ? fromBounds.left - containerBounds.left + fromBounds.width / 2
+        : fromBounds.right - containerBounds.left + 0.5;
+      const startY = isVerticalLayout
+        ? fromBounds.bottom - containerBounds.top - 0.5
+        : fromBounds.top - containerBounds.top + fromBounds.height / 2;
+      const endX = isVerticalLayout
+        ? toBounds.left - containerBounds.left + toBounds.width / 2
+        : toBounds.left - containerBounds.left - 0.5;
+      const endY = isVerticalLayout
+        ? toBounds.top - containerBounds.top + 0.5
+        : toBounds.top - containerBounds.top + toBounds.height / 2;
 
-      const position = sourceCounter.get(link.fromId) ?? 0;
-      sourceCounter.set(link.fromId, position + 1);
-      const total = sourceTotals.get(link.fromId) ?? 1;
-      const spread = (position - (total - 1) / 2) * 7;
-
-      const horizontalDistance = Math.max(42, endX - startX);
-      const c1x = startX + horizontalDistance * 0.34;
-      const c1y = startY + spread;
-      const c2x = endX - horizontalDistance * 0.44;
-      const c2y = endY;
-      const pathD = `M ${startX} ${startY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${endX} ${endY}`;
-      const headD = buildArrowHeadPath(endX, endY, c2x, c2y);
-
-      nextPaths.push({
-        id: link.id ?? `${link.fromId}->${link.toId}`,
-        d: pathD,
-        headD,
+      linkGeometries.push({
+        linkId: link.id ?? `${link.fromId}->${link.toId}`,
+        fromId: link.fromId,
+        startX,
+        startY,
+        endX,
+        endY,
       });
     }
 
+    const nextPaths: GraphArrowPath[] = [];
+    if (isVerticalLayout) {
+      const grouped = new Map<string, LinkGeometry[]>();
+      for (const geometry of linkGeometries) {
+        const bucket = grouped.get(geometry.fromId);
+        if (bucket) {
+          bucket.push(geometry);
+        } else {
+          grouped.set(geometry.fromId, [geometry]);
+        }
+      }
+
+      for (const group of grouped.values()) {
+        if (group.length === 0) continue;
+
+        group.sort((a, b) => a.endX - b.endX);
+        const sourceX = group[0].startX;
+        const sourceY = group[0].startY;
+
+        if (group.length > 1) {
+          const minEndY = Math.min(...group.map((geometry) => geometry.endY));
+          const maxHubY = minEndY - 14;
+          const estimatedHub =
+            sourceY + Math.max(24, Math.min(66, (minEndY - sourceY) * 0.34));
+          const hubY = Math.max(sourceY + 12, Math.min(maxHubY, estimatedHub));
+
+          if (hubY > sourceY + 8) {
+            const trunkC1Y = sourceY + Math.max(10, (hubY - sourceY) * 0.36);
+            const trunkC2Y = sourceY + Math.max(16, (hubY - sourceY) * 0.74);
+            nextPaths.push({
+              id: `${group[0].fromId}:trunk:${Math.round(hubY)}`,
+              d: `M ${sourceX} ${sourceY} C ${sourceX} ${trunkC1Y}, ${sourceX} ${trunkC2Y}, ${sourceX} ${hubY}`,
+              headD: "",
+              isTrunk: true,
+            });
+          }
+
+          const total = group.length;
+          group.forEach((geometry, position) => {
+            const laneOffset = (position - (total - 1) / 2) * 14;
+            const laneX = sourceX + laneOffset;
+            const endX = geometry.endX;
+            const endY = geometry.endY;
+            const c1x = sourceX + laneOffset * 0.58;
+            const c1y = hubY + Math.max(9, Math.min(24, (endY - hubY) * 0.22));
+            const c2x = endX;
+            const c2y = endY - Math.max(12, Math.min(40, (endY - hubY) * 0.44));
+            const pathD = `M ${sourceX} ${hubY} C ${c1x} ${c1y}, ${laneX} ${Math.max(
+              hubY + 8,
+              c2y - 12,
+            )}, ${endX} ${endY}`;
+            const headD = buildArrowHeadPath(endX, endY, c2x, c2y);
+            nextPaths.push({
+              id: geometry.linkId,
+              d: pathD,
+              headD,
+            });
+          });
+          continue;
+        }
+
+        const only = group[0];
+        const verticalDistance = Math.max(42, only.endY - only.startY);
+        const c1x = only.startX;
+        const c1y = only.startY + Math.min(34, verticalDistance * 0.34);
+        const c2x = only.endX;
+        const c2y = only.endY - Math.min(34, verticalDistance * 0.46);
+        const pathD = `M ${only.startX} ${only.startY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${only.endX} ${only.endY}`;
+        const headD = buildArrowHeadPath(only.endX, only.endY, c2x, c2y);
+        nextPaths.push({
+          id: only.linkId,
+          d: pathD,
+          headD,
+        });
+      }
+    } else {
+      const sourceCounter = new Map<string, number>();
+      const sourceTotals = new Map<string, number>();
+      for (const geometry of linkGeometries) {
+        sourceTotals.set(
+          geometry.fromId,
+          (sourceTotals.get(geometry.fromId) ?? 0) + 1,
+        );
+      }
+
+      for (const geometry of linkGeometries) {
+        const position = sourceCounter.get(geometry.fromId) ?? 0;
+        sourceCounter.set(geometry.fromId, position + 1);
+        const total = sourceTotals.get(geometry.fromId) ?? 1;
+        const spread = (position - (total - 1) / 2) * 7;
+        const horizontalDistance = Math.max(42, geometry.endX - geometry.startX);
+        const c1x = geometry.startX + horizontalDistance * 0.34;
+        const c1y = geometry.startY + spread;
+        const c2x = geometry.endX - horizontalDistance * 0.44;
+        const c2y = geometry.endY;
+        const pathD = `M ${geometry.startX} ${geometry.startY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${geometry.endX} ${geometry.endY}`;
+        const headD = buildArrowHeadPath(geometry.endX, geometry.endY, c2x, c2y);
+        nextPaths.push({
+          id: geometry.linkId,
+          d: pathD,
+          headD,
+        });
+      }
+    }
+
     setPaths((previous) => (pathsEqual(previous, nextPaths) ? previous : nextPaths));
-  }, [visibleLinks]);
+  }, [isVerticalLayout, visibleLinks]);
 
   const scheduleLinkPathRecompute = useCallback(() => {
     if (disposedRef.current) {
@@ -950,7 +1099,10 @@ export function CauseEffectCard({
   const rightLaneLabel = laneLabel("right", semanticMode);
 
   return (
-    <section className="life-causal-card" data-card-id={cardId}>
+    <section
+      className={`life-causal-card life-causal-card--${layoutOrientation}`}
+      data-card-id={cardId}
+    >
       <div className="life-causal-card__labels">
         <div className="life-causal-card__lane-label life-causal-card__lane-label--left">
           {leftLaneLabel}
@@ -960,7 +1112,10 @@ export function CauseEffectCard({
         </div>
       </div>
 
-      <div ref={containerRef} className="life-causal-card__lanes">
+      <div
+        ref={containerRef}
+        className={`life-causal-card__lanes life-causal-card__lanes--${layoutOrientation}`}
+      >
         <div className="life-causal-card__lane life-causal-card__lane--left">
           {causal.leftNodes.map((node, index) => (
             <NodeCard
@@ -968,6 +1123,8 @@ export function CauseEffectCard({
               node={node}
               side="left"
               index={index}
+              layoutOrientation={layoutOrientation}
+              staggerOffsetPx={0}
               fallbackTitle={index === 0 ? cardTitle : undefined}
               selected={selectedNodeId === node.id}
               setRef={registerLeftRef}
@@ -979,7 +1136,11 @@ export function CauseEffectCard({
           ))}
         </div>
 
-        <GraphArrowLayer paths={paths} gradientId={gradientId} />
+        <GraphArrowLayer
+          paths={paths}
+          gradientId={gradientId}
+          orientation={layoutOrientation}
+        />
 
         <div className="life-causal-card__lane life-causal-card__lane--right">
           {visibleRightNodes.map((node, index) => (
@@ -988,6 +1149,8 @@ export function CauseEffectCard({
               node={node}
               side="right"
               index={index}
+              layoutOrientation={layoutOrientation}
+              staggerOffsetPx={rightNodeStaggerOffsets[index] ?? 0}
               selected={selectedNodeId === node.id}
               setRef={registerRightRef}
               onSelectNode={handleSelectNode}

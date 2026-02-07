@@ -3,18 +3,75 @@ use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
+use serde::{Deserialize, Serialize};
 use tokio::fs;
 
 use super::service::EnrichedData;
 use super::types::{
     CardImage, CardState, CardType, CausalCardContent, CausalLayoutState, CausalLink, CausalNode,
     CausalNodeRole, DomainId, ExpandedContent, ExpandedSection, LayoutMode, LifeStreamError,
-    StreamCard,
+    SemanticAttemptTraceStats, SemanticEventTraceEntry, StreamCard,
 };
 
 #[derive(Clone)]
 pub struct ObsidianIO {
     obsidian_root: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DayThreadRuntimeState {
+    pub date: String,
+    #[serde(rename = "threadId")]
+    pub thread_id: String,
+    #[serde(default, rename = "lastSeedHash")]
+    pub last_seed_hash: Option<String>,
+    #[serde(default, rename = "cardCount")]
+    pub card_count: usize,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticRewriteLogEntry {
+    #[serde(rename = "cardId")]
+    pub card_id: String,
+    pub date: String,
+    #[serde(rename = "threadId")]
+    pub thread_id: String,
+    pub prompt: String,
+    #[serde(rename = "rawResponse")]
+    pub raw_response: String,
+    #[serde(default, rename = "parsedJson")]
+    pub parsed_json: Option<serde_json::Value>,
+    #[serde(default, rename = "failureReason")]
+    pub failure_reason: Option<String>,
+    #[serde(rename = "startedAt")]
+    pub started_at: String,
+    #[serde(rename = "completedAt")]
+    pub completed_at: String,
+    #[serde(default)]
+    pub attempts: Vec<SemanticRewriteLogAttempt>,
+    #[serde(default, rename = "traceStats")]
+    pub trace_stats: Option<SemanticAttemptTraceStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticRewriteLogAttempt {
+    pub stage: String,
+    pub prompt: String,
+    #[serde(rename = "rawResponse")]
+    pub raw_response: String,
+    #[serde(default, rename = "parsedJson")]
+    pub parsed_json: Option<serde_json::Value>,
+    #[serde(default, rename = "failureReason")]
+    pub failure_reason: Option<String>,
+    #[serde(default, rename = "eventTrace")]
+    pub event_trace: Vec<SemanticEventTraceEntry>,
+    #[serde(default, rename = "traceStats")]
+    pub trace_stats: Option<SemanticAttemptTraceStats>,
 }
 
 impl ObsidianIO {
@@ -127,6 +184,122 @@ impl ObsidianIO {
         Ok(())
     }
 
+    pub async fn read_day_thread_runtime_state(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        date_iso: &str,
+    ) -> Result<Option<DayThreadRuntimeState>, LifeStreamError> {
+        let root = self.resolve_root(workspace_path, obsidian_root)?;
+        let runtime_path = day_thread_runtime_path(&root, date_iso)?;
+        let runtime_path = validate_path_within_vault(&root, &runtime_path)?;
+        if !runtime_path.exists() {
+            return Ok(None);
+        }
+
+        let content = fs::read_to_string(&runtime_path).await.map_err(|err| {
+            LifeStreamError::Io(format!(
+                "Failed to read day thread runtime file {}: {err}",
+                runtime_path.display()
+            ))
+        })?;
+
+        let payload = serde_json::from_str::<DayThreadRuntimeState>(&content).map_err(|err| {
+            LifeStreamError::Parse(format!(
+                "Failed to parse day thread runtime file {}: {err}",
+                runtime_path.display()
+            ))
+        })?;
+        Ok(Some(payload))
+    }
+
+    pub async fn write_day_thread_runtime_state(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        payload: &DayThreadRuntimeState,
+    ) -> Result<(), LifeStreamError> {
+        let root = self.resolve_root(workspace_path, obsidian_root)?;
+        let runtime_path = day_thread_runtime_path(&root, payload.date.as_str())?;
+        let runtime_path = validate_path_within_vault(&root, &runtime_path)?;
+        if let Some(parent) = runtime_path.parent() {
+            fs::create_dir_all(parent).await.map_err(|err| {
+                LifeStreamError::Io(format!(
+                    "Failed to create day thread runtime directory {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        let content = serde_json::to_string_pretty(payload).map_err(|err| {
+            LifeStreamError::Parse(format!(
+                "Failed serializing day thread runtime payload: {err}"
+            ))
+        })?;
+        fs::write(&runtime_path, content).await.map_err(|err| {
+            LifeStreamError::Io(format!(
+                "Failed to write day thread runtime file {}: {err}",
+                runtime_path.display()
+            ))
+        })?;
+        Ok(())
+    }
+
+    pub async fn delete_day_thread_runtime_state(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        date_iso: &str,
+    ) -> Result<(), LifeStreamError> {
+        let root = self.resolve_root(workspace_path, obsidian_root)?;
+        let runtime_path = day_thread_runtime_path(&root, date_iso)?;
+        let runtime_path = validate_path_within_vault(&root, &runtime_path)?;
+        if !runtime_path.exists() {
+            return Ok(());
+        }
+        fs::remove_file(&runtime_path).await.map_err(|err| {
+            LifeStreamError::Io(format!(
+                "Failed to delete day thread runtime file {}: {err}",
+                runtime_path.display()
+            ))
+        })?;
+        Ok(())
+    }
+
+    pub async fn write_semantic_rewrite_log(
+        &self,
+        workspace_path: &str,
+        obsidian_root: Option<&str>,
+        date_iso: &str,
+        card_id: &str,
+        payload: &SemanticRewriteLogEntry,
+    ) -> Result<(), LifeStreamError> {
+        let root = self.resolve_root(workspace_path, obsidian_root)?;
+        let log_path = semantic_rewrite_log_path(&root, date_iso, card_id)?;
+        let log_path = validate_path_within_vault(&root, &log_path)?;
+        if let Some(parent) = log_path.parent() {
+            fs::create_dir_all(parent).await.map_err(|err| {
+                LifeStreamError::Io(format!(
+                    "Failed to create semantic rewrite log directory {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        let content = serde_json::to_string_pretty(payload).map_err(|err| {
+            LifeStreamError::Parse(format!(
+                "Failed serializing semantic rewrite log payload: {err}"
+            ))
+        })?;
+        fs::write(&log_path, content).await.map_err(|err| {
+            LifeStreamError::Io(format!(
+                "Failed to write semantic rewrite log {}: {err}",
+                log_path.display()
+            ))
+        })?;
+        Ok(())
+    }
+
     fn resolve_root(
         &self,
         workspace_path: &str,
@@ -192,6 +365,43 @@ fn validate_path_within_vault(
 fn stream_file_path(root: &Path, year: i32, month: u32) -> PathBuf {
     let filename = format!("{year}-{month:02}.md");
     root.join("Stream").join(filename)
+}
+
+fn day_thread_runtime_path(root: &Path, date_iso: &str) -> Result<PathBuf, LifeStreamError> {
+    NaiveDate::parse_from_str(date_iso, "%Y-%m-%d")
+        .map_err(|err| LifeStreamError::Parse(format!("Invalid date {date_iso}: {err}")))?;
+    let filename = format!("life-stream.day-thread.{date_iso}.json");
+    Ok(root.join("Runtime").join(filename))
+}
+
+fn sanitize_filename_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => ch,
+            _ => '_',
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn semantic_rewrite_log_path(
+    root: &Path,
+    date_iso: &str,
+    card_id: &str,
+) -> Result<PathBuf, LifeStreamError> {
+    NaiveDate::parse_from_str(date_iso, "%Y-%m-%d")
+        .map_err(|err| LifeStreamError::Parse(format!("Invalid date {date_iso}: {err}")))?;
+    let card_component = sanitize_filename_component(card_id);
+    Ok(root
+        .join("Runtime")
+        .join("semantic-rewrite")
+        .join(date_iso)
+        .join(format!("{card_component}.json")))
 }
 
 fn append_card_entry(
@@ -309,7 +519,13 @@ fn task_id_for_card(card_id: &str, occurred_at_raw: &str, occurred_at: &NaiveDat
         .get(11..16)
         .map(|value| value.replace(':', ""))
         .filter(|value| value.len() == 4)
-        .unwrap_or_else(|| format!("{:02}{:02}", occurred_at.time().hour(), occurred_at.time().minute()));
+        .unwrap_or_else(|| {
+            format!(
+                "{:02}{:02}",
+                occurred_at.time().hour(),
+                occurred_at.time().minute()
+            )
+        });
     format!(
         "{}-{}-{}",
         occurred_at.date().format("%Y-%m-%d"),
@@ -769,8 +985,7 @@ fn extract_legacy_bullets(text: &str) -> Vec<String> {
 }
 
 fn first_sentence(text: &str) -> Option<String> {
-    text
-        .split('\n')
+    text.split('\n')
         .map(str::trim)
         .find(|line| !line.is_empty())
         .and_then(|line| line.split_terminator(['.', '!', '?']).next())
@@ -866,8 +1081,9 @@ fn parse_note_payload(lines: &[String]) -> NotePayload {
                 "response" => payload.response = Some(value.to_string()),
                 "duration_ms" => payload.duration_ms = value.parse::<u64>().ok(),
                 "semantic_b64" => {
-                    payload.semantic = decode_b64(value)
-                        .and_then(|decoded| serde_json::from_str::<CausalCardContent>(&decoded).ok())
+                    payload.semantic = decode_b64(value).and_then(|decoded| {
+                        serde_json::from_str::<CausalCardContent>(&decoded).ok()
+                    })
                 }
                 "semantic" => {
                     payload.semantic = serde_json::from_str::<CausalCardContent>(value).ok();
@@ -1017,6 +1233,7 @@ pub(crate) fn normalize_time(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn parses_table_entries_with_note_payload_metadata() {
@@ -1155,12 +1372,28 @@ Logged entry.
         );
 
         let date = NaiveDate::from_ymd_opt(2026, 2, 2).expect("valid date");
-        let cards = parse_cards_from_stream(content.as_str(), date, Path::new("/vault/Stream/2026-02.md"));
+        let cards = parse_cards_from_stream(
+            content.as_str(),
+            date,
+            Path::new("/vault/Stream/2026-02.md"),
+        );
         assert_eq!(cards.len(), 1);
         let causal = cards[0].causal.as_ref().expect("causal graph");
-        assert_eq!(causal.left_nodes[0].headline.as_deref(), Some("Custom statement title"));
-        assert_eq!(causal.right_nodes[0].headline.as_deref(), Some("Custom reason"));
-        assert_eq!(causal.right_nodes[0].bullets.as_ref().map(|value| value.len()), Some(2));
+        assert_eq!(
+            causal.left_nodes[0].headline.as_deref(),
+            Some("Custom statement title")
+        );
+        assert_eq!(
+            causal.right_nodes[0].headline.as_deref(),
+            Some("Custom reason")
+        );
+        assert_eq!(
+            causal.right_nodes[0]
+                .bullets
+                .as_ref()
+                .map(|value| value.len()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -1186,5 +1419,79 @@ Body line
         assert!(changed);
         assert!(updated.contains("<!--semantic_b64:new-value-->"));
         assert!(!updated.contains("<!--semantic_b64:old-->"));
+    }
+
+    #[tokio::test]
+    async fn day_thread_runtime_state_round_trip() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().to_string_lossy().to_string();
+        let io = ObsidianIO::new(Some(root.clone()));
+        let payload = DayThreadRuntimeState {
+            date: "2026-02-06".to_string(),
+            thread_id: "thread_abc123".to_string(),
+            last_seed_hash: Some("seed-hash".to_string()),
+            card_count: 18,
+            updated_at: "2026-02-06T18:42:00Z".to_string(),
+        };
+
+        io.write_day_thread_runtime_state("/tmp/workspace", Some(&root), &payload)
+            .await
+            .expect("write payload");
+
+        let loaded = io
+            .read_day_thread_runtime_state("/tmp/workspace", Some(&root), "2026-02-06")
+            .await
+            .expect("read payload")
+            .expect("payload exists");
+        assert_eq!(loaded, payload);
+    }
+
+    #[tokio::test]
+    async fn write_semantic_rewrite_log_sanitizes_card_filename() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().to_string_lossy().to_string();
+        let io = ObsidianIO::new(Some(root.clone()));
+        let payload = SemanticRewriteLogEntry {
+            card_id: "2026-02-06-1234-card".to_string(),
+            date: "2026-02-06".to_string(),
+            thread_id: "thread_abc123".to_string(),
+            prompt: "Prompt body".to_string(),
+            raw_response: "{\"ok\":true}".to_string(),
+            parsed_json: Some(json!({ "ok": true })),
+            failure_reason: None,
+            started_at: "2026-02-06T18:40:00Z".to_string(),
+            completed_at: "2026-02-06T18:40:01Z".to_string(),
+            attempts: vec![SemanticRewriteLogAttempt {
+                stage: "initial".to_string(),
+                prompt: "Prompt body".to_string(),
+                raw_response: "{\"ok\":true}".to_string(),
+                parsed_json: Some(json!({ "ok": true })),
+                failure_reason: None,
+                event_trace: Vec::new(),
+                trace_stats: None,
+            }],
+            trace_stats: None,
+        };
+
+        io.write_semantic_rewrite_log(
+            "/tmp/workspace",
+            Some(&root),
+            "2026-02-06",
+            "card/unsafe:name",
+            &payload,
+        )
+        .await
+        .expect("write log");
+
+        let expected_path = Path::new(&root)
+            .join("Runtime")
+            .join("semantic-rewrite")
+            .join("2026-02-06")
+            .join("card_unsafe_name.json");
+        assert!(
+            expected_path.exists(),
+            "expected log file at {}",
+            expected_path.display()
+        );
     }
 }

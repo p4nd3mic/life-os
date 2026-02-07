@@ -525,6 +525,114 @@ pub struct SemanticRegenerationResult {
     pub failed: usize,
     #[serde(default)]
     pub errors: Vec<String>,
+    #[serde(default, rename = "llmLogStatus")]
+    pub llm_log_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticAttemptTraceStats {
+    #[serde(default, rename = "eventCount")]
+    pub event_count: usize,
+    #[serde(default, rename = "agentDeltaSeen")]
+    pub agent_delta_seen: bool,
+    #[serde(default, rename = "agentCompletedSeen")]
+    pub agent_completed_seen: bool,
+    #[serde(default, rename = "turnCompletedSeen")]
+    pub turn_completed_seen: bool,
+    #[serde(default, rename = "errorSeen")]
+    pub error_seen: bool,
+    #[serde(default, rename = "firstErrorMessage")]
+    pub first_error_message: Option<String>,
+    #[serde(default, rename = "outputSource")]
+    pub output_source: Option<String>,
+    #[serde(default, rename = "outputChars")]
+    pub output_chars: usize,
+    #[serde(default, rename = "methodsSeen")]
+    pub methods_seen: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticEventTraceEntry {
+    pub timestamp: String,
+    pub method: String,
+    #[serde(default, rename = "normalizedMethod")]
+    pub normalized_method: Option<String>,
+    #[serde(default, rename = "threadIds")]
+    pub thread_ids: Vec<String>,
+    #[serde(default, rename = "turnId")]
+    pub turn_id: Option<String>,
+    #[serde(default, rename = "itemType")]
+    pub item_type: Option<String>,
+    #[serde(default, rename = "itemId")]
+    pub item_id: Option<String>,
+    #[serde(default, rename = "paramsPreview")]
+    pub params_preview: Option<String>,
+    #[serde(default, rename = "deltaPreview")]
+    pub delta_preview: Option<String>,
+    #[serde(default, rename = "errorPreview")]
+    pub error_preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayThreadDebugLogItem {
+    #[serde(rename = "cardId")]
+    pub card_id: String,
+    #[serde(default, rename = "threadId")]
+    pub thread_id: Option<String>,
+    #[serde(default, rename = "startedAt")]
+    pub started_at: Option<String>,
+    #[serde(default, rename = "completedAt")]
+    pub completed_at: Option<String>,
+    #[serde(default, rename = "failureReason")]
+    pub failure_reason: Option<String>,
+    #[serde(default, rename = "promptEchoDetected")]
+    pub prompt_echo_detected: bool,
+    #[serde(default, rename = "rawResponsePreview")]
+    pub raw_response_preview: Option<String>,
+    #[serde(default, rename = "traceStats")]
+    pub trace_stats: Option<SemanticAttemptTraceStats>,
+    #[serde(default, rename = "eventTracePreview")]
+    pub event_trace_preview: Vec<SemanticEventTraceEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayThreadDebugSummary {
+    pub date: String,
+    #[serde(default, rename = "threadId")]
+    pub thread_id: Option<String>,
+    #[serde(default, rename = "lastSeedHash")]
+    pub last_seed_hash: Option<String>,
+    #[serde(default, rename = "cardCount")]
+    pub card_count: Option<usize>,
+    #[serde(default, rename = "updatedAt")]
+    pub updated_at: Option<String>,
+    #[serde(rename = "logDirectory")]
+    pub log_directory: String,
+    #[serde(rename = "totalLogs")]
+    pub total_logs: usize,
+    #[serde(rename = "failedLogs")]
+    pub failed_logs: usize,
+    #[serde(rename = "successfulLogs")]
+    pub successful_logs: usize,
+    #[serde(default, rename = "lastFailureReason")]
+    pub last_failure_reason: Option<String>,
+    #[serde(default, rename = "lastFailureCardId")]
+    pub last_failure_card_id: Option<String>,
+    #[serde(default, rename = "recentLogs")]
+    pub recent_logs: Vec<DayThreadDebugLogItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LifeStreamAuthHealth {
+    pub state: String,
+    pub message: String,
+    #[serde(rename = "checkedAt")]
+    pub checked_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

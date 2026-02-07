@@ -5,6 +5,8 @@ import { streamStore } from "../state/streamStore";
 import type {
   CausalRestructureAction,
   CausalRestructureResult,
+  DayThreadDebugSummary,
+  LifeStreamAuthHealth,
   ImageAutoFetchMode,
   ImageAutoFetchSummary,
   ImageAttachResult,
@@ -250,6 +252,63 @@ export function useLifeStream(workspaceId: string | null) {
     [workspaceId],
   );
 
+  const getDayThreadDebug = useCallback(
+    async (dateIso: string): Promise<DayThreadDebugSummary | null> => {
+      if (!workspaceId) {
+        return null;
+      }
+      try {
+        return await invoke<DayThreadDebugSummary>("life_stream_day_thread_debug", {
+          workspaceId,
+          dateIso,
+        });
+      } catch (err) {
+        console.error("Failed to load day-thread debug summary:", err);
+        return null;
+      }
+    },
+    [workspaceId],
+  );
+
+  const getAuthHealth = useCallback(async (): Promise<LifeStreamAuthHealth | null> => {
+    if (!workspaceId) {
+      return null;
+    }
+    try {
+      return await invoke<LifeStreamAuthHealth>("life_stream_auth_health", {
+        workspaceId,
+      });
+    } catch (err) {
+      console.error("Failed to check Life Stream auth health:", err);
+      return null;
+    }
+  }, [workspaceId]);
+
+  const resetDayThreadAndRebuild = useCallback(
+    async (
+      dateIso: string,
+      persist = true,
+    ): Promise<SemanticRegenerationResult | null> => {
+      if (!workspaceId) {
+        return null;
+      }
+      try {
+        return await invoke<SemanticRegenerationResult>(
+          "life_stream_day_thread_reset_and_rebuild",
+          {
+            workspaceId,
+            dateIso,
+            persist,
+          },
+        );
+      } catch (err) {
+        console.error("Failed to reset day-thread and rebuild semantics:", err);
+        return null;
+      }
+    },
+    [workspaceId],
+  );
+
   const getImageCandidates = useCallback(
     async (cardId: string, nodeId?: string | null): Promise<ImageCandidateResponse | null> => {
       if (!workspaceId) return null;
@@ -381,6 +440,9 @@ export function useLifeStream(workspaceId: string | null) {
     clarify,
     restructure,
     regenerateSemantics,
+    getDayThreadDebug,
+    getAuthHealth,
+    resetDayThreadAndRebuild,
     getImageCandidates,
     attachImage,
     autoFetchImages,

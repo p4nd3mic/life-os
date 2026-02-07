@@ -11,6 +11,7 @@ type TaskDockSnapshot = {
   items: TaskDockItem[];
   filter: TaskDockFilter;
   collapsed: boolean;
+  hidden: boolean;
 };
 
 const PREF_STORAGE_KEY = "life-stream-task-dock-prefs.v1";
@@ -20,6 +21,7 @@ function defaultSnapshot(): TaskDockSnapshot {
     items: [],
     filter: "today",
     collapsed: false,
+    hidden: false,
   };
 }
 
@@ -81,6 +83,17 @@ class TaskDockStore {
     this.snapshot = {
       ...this.snapshot,
       collapsed,
+    };
+    this.persistPrefs();
+    this.notify();
+  }
+
+  setHidden(hidden: boolean): void {
+    if (this.snapshot.hidden === hidden) return;
+    this.snapshot = {
+      ...this.snapshot,
+      hidden,
+      collapsed: hidden ? true : this.snapshot.collapsed,
     };
     this.persistPrefs();
     this.notify();
@@ -182,6 +195,7 @@ class TaskDockStore {
         ...base,
         filter: parsed.filter === "all" ? "all" : "today",
         collapsed: Boolean(parsed.collapsed),
+        hidden: Boolean(parsed.hidden),
       };
     } catch {
       return base;
@@ -196,6 +210,7 @@ class TaskDockStore {
         JSON.stringify({
           filter: this.snapshot.filter,
           collapsed: this.snapshot.collapsed,
+          hidden: this.snapshot.hidden,
         }),
       );
     } catch {
@@ -212,4 +227,3 @@ class TaskDockStore {
 
 export const taskDockStore = new TaskDockStore();
 export type { TaskDockSnapshot, TaskDockItemKind };
-

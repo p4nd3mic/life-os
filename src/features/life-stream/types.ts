@@ -219,6 +219,65 @@ export type SemanticRegenerationResult = {
   skipped: number;
   failed: number;
   errors: string[];
+  llmLogStatus?: "success" | "failed";
+};
+
+export type DayThreadDebugLogItem = {
+  cardId: string;
+  threadId?: string;
+  startedAt?: string;
+  completedAt?: string;
+  failureReason?: string;
+  promptEchoDetected?: boolean;
+  rawResponsePreview?: string;
+  traceStats?: SemanticAttemptTraceStats;
+  eventTracePreview?: SemanticEventTraceEntry[];
+};
+
+export type SemanticAttemptTraceStats = {
+  eventCount: number;
+  agentDeltaSeen: boolean;
+  agentCompletedSeen: boolean;
+  turnCompletedSeen: boolean;
+  errorSeen: boolean;
+  firstErrorMessage?: string;
+  outputSource?: string;
+  outputChars: number;
+  methodsSeen: string[];
+};
+
+export type SemanticEventTraceEntry = {
+  timestamp: string;
+  method: string;
+  normalizedMethod?: string;
+  threadIds: string[];
+  turnId?: string;
+  itemType?: string;
+  itemId?: string;
+  paramsPreview?: string;
+  deltaPreview?: string;
+  errorPreview?: string;
+};
+
+export type DayThreadDebugSummary = {
+  date: string;
+  threadId?: string;
+  lastSeedHash?: string;
+  cardCount?: number;
+  updatedAt?: string;
+  logDirectory: string;
+  totalLogs: number;
+  failedLogs: number;
+  successfulLogs: number;
+  lastFailureReason?: string;
+  lastFailureCardId?: string;
+  recentLogs: DayThreadDebugLogItem[];
+};
+
+export type LifeStreamAuthHealth = {
+  state: "healthy" | "unauthorized" | "unknown" | "error";
+  message: string;
+  checkedAt: string;
 };
 
 export type TaskDockItemKind = "task" | "reminder";

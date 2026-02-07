@@ -60,9 +60,13 @@ pub(crate) async fn save_task_dock_at_root(
 
 async fn save_task_dock_to_path(path: &Path, payload: &TaskDockPayload) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|error| format!("Failed creating task dock directory {}: {}", parent.display(), error))?;
+        fs::create_dir_all(parent).await.map_err(|error| {
+            format!(
+                "Failed creating task dock directory {}: {}",
+                parent.display(),
+                error
+            )
+        })?;
     }
 
     let content = serde_json::to_string_pretty(payload)
@@ -77,7 +81,11 @@ pub(crate) async fn upsert_task_dock_item(
     item: TaskDockItem,
 ) -> Result<(), String> {
     let mut payload = load_task_dock(entry).await.unwrap_or_default();
-    if payload.items.iter().any(|existing| existing.key == item.key) {
+    if payload
+        .items
+        .iter()
+        .any(|existing| existing.key == item.key)
+    {
         return Ok(());
     }
     payload.items.insert(0, item);
@@ -89,7 +97,11 @@ pub(crate) async fn upsert_task_dock_item_at_root(
     item: TaskDockItem,
 ) -> Result<(), String> {
     let mut payload = load_task_dock_at_root(root).await.unwrap_or_default();
-    if payload.items.iter().any(|existing| existing.key == item.key) {
+    if payload
+        .items
+        .iter()
+        .any(|existing| existing.key == item.key)
+    {
         return Ok(());
     }
     payload.items.insert(0, item);
@@ -98,7 +110,9 @@ pub(crate) async fn upsert_task_dock_item_at_root(
 
 #[cfg(test)]
 mod tests {
-    use super::{load_task_dock_at_root, save_task_dock_at_root, task_dock_path, task_dock_path_from_root};
+    use super::{
+        load_task_dock_at_root, save_task_dock_at_root, task_dock_path, task_dock_path_from_root,
+    };
     use crate::life_stream::types::{TaskDockItem, TaskDockItemKind, TaskDockPayload};
     use crate::types::{WorkspaceEntry, WorkspaceKind, WorkspaceSettings};
     use tempfile::tempdir;
