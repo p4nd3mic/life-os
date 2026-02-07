@@ -18,6 +18,7 @@ const makeCard = (overrides: Partial<StreamCard> = {}): StreamCard => ({
   title: overrides.title ?? "Test Card",
   summary: overrides.summary ?? "Summary",
   durationMs: overrides.durationMs ?? 2000,
+  originalInput: overrides.originalInput,
 });
 
 describe("CardItem", () => {

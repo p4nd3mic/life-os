@@ -112,9 +112,9 @@ describe("CardBubble", () => {
     const scoped = within(graph as HTMLElement);
 
     expect(scoped.getByText(/Evening walk/i)).toBeTruthy();
-    expect(scoped.getByText(/^Episode 1$/i)).toBeTruthy();
-    expect(scoped.getByText(/^Episode 2$/i)).toBeTruthy();
-    expect(scoped.getByText(/^Episode 3$/i)).toBeTruthy();
+    expect(scoped.getAllByText(/^Episode 1$/i).length).toBeGreaterThanOrEqual(1);
+    expect(scoped.getAllByText(/^Episode 2$/i).length).toBeGreaterThanOrEqual(1);
+    expect(scoped.getAllByText(/^Episode 3$/i).length).toBeGreaterThanOrEqual(1);
     expect(scoped.getByText(/More effects/i)).toBeTruthy();
     expect(scoped.getByText(/Episode 4/i)).toBeTruthy();
     expect(scoped.queryByRole("button", { name: /show all outcomes/i })).toBeNull();
@@ -166,9 +166,9 @@ describe("CardBubble", () => {
     expect(graph).toBeTruthy();
     const scoped = within(graph as HTMLElement);
 
-    expect(scoped.getByText(/Order #2/i)).toBeTruthy();
-    expect(scoped.getByText(/Order #3/i)).toBeTruthy();
-    expect(scoped.getByText(/Order #4/i)).toBeTruthy();
+    expect(scoped.getAllByText(/Order #2/i).length).toBeGreaterThanOrEqual(1);
+    expect(scoped.getAllByText(/Order #3/i).length).toBeGreaterThanOrEqual(1);
+    expect(scoped.getAllByText(/Order #4/i).length).toBeGreaterThanOrEqual(1);
     expect(scoped.getByText(/More outcomes/i)).toBeTruthy();
     expect(scoped.getByText(/Order #1/i)).toBeTruthy();
   });

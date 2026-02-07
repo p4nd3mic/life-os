@@ -18,6 +18,50 @@ function formatTime(iso: string) {
   return timeFormatter.format(date);
 }
 
+const GENERIC_TITLES = new Set([
+  "response",
+  "assistant response",
+  "output",
+  "result",
+  "details",
+]);
+
+function sentenceTitle(value: string) {
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .map((part) => {
+      if (!part) return part;
+      return `${part.charAt(0).toUpperCase()}${part.slice(1).toLowerCase()}`;
+    })
+    .join(" ");
+}
+
+function displayTitleForCard(card: {
+  title: string;
+  originalInput?: string;
+  emoji?: string;
+}) {
+  const normalized = card.title.trim().toLowerCase();
+  const shouldFallback = GENERIC_TITLES.has(normalized);
+  if (!shouldFallback || !card.originalInput?.trim()) {
+    return card.title;
+  }
+  const prefix = card.emoji ? `${card.emoji} ` : "";
+  return `${prefix}${sentenceTitle(card.originalInput)}`;
+}
+
+function formatDoneDuration(durationMs?: number) {
+  if (!durationMs || durationMs <= 0) {
+    return null;
+  }
+  const totalSeconds = Math.max(1, Math.round(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `Done in ${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 type CardItemProps = {
   cardId: string;
   onCancel: (cardId: string) => void;
@@ -50,6 +94,14 @@ export function CardItem({ cardId, onCancel, onRetry, onClarify }: CardItemProps
   const canRetry = card?.state === "error";
   const canExpand = card?.state === "complete" && Boolean(card?.expanded);
   const clarificationOptions = card?.clarificationOptions ?? [];
+  const displayTitle = useMemo(
+    () => (card ? displayTitleForCard(card) : ""),
+    [card],
+  );
+  const doneDurationLabel = useMemo(
+    () => (card?.state === "complete" ? formatDoneDuration(card.durationMs) : null),
+    [card?.durationMs, card?.state],
+  );
 
   const toggleExpanded = useCallback(() => {
     if (!canExpand) return;
@@ -73,9 +125,12 @@ export function CardItem({ cardId, onCancel, onRetry, onClarify }: CardItemProps
           {card.emoji}
         </div>
         <div className="life-stream-card__meta">
-          <div className="life-stream-card__title">{card.title}</div>
+          <div className="life-stream-card__title">{displayTitle}</div>
           {card.subtitle && (
             <div className="life-stream-card__subtitle">{card.subtitle}</div>
+          )}
+          {!card.subtitle && doneDurationLabel && (
+            <div className="life-stream-card__subtitle">{doneDurationLabel}</div>
           )}
         </div>
         <div className="life-stream-card__time">{timeLabel}</div>
