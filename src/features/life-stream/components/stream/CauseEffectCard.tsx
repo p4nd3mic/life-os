@@ -36,6 +36,11 @@ type CauseEffectCardProps = {
 const TOP_VISIBLE_RIGHT_NODES = 3;
 const ARROW_HEAD_LENGTH = 13;
 const ARROW_HEAD_WIDTH = 9;
+const GRAPH_STEM_MIN_PX = 24;
+const GRAPH_STEM_MAX_PX = 80;
+const GRAPH_BRANCH_CLEARANCE_PX = 18;
+const GRAPH_BRANCH_SPREAD_PX = 18;
+const GRAPH_SINGLE_LINK_MIN_VERTICAL_PX = 56;
 const IS_JSDOM_ENV =
   typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent);
 
@@ -867,14 +872,14 @@ export function CauseEffectCard({
 
         if (group.length > 1) {
           const minEndY = Math.min(...group.map((geometry) => geometry.endY));
-          const maxHubY = minEndY - 14;
+          const maxHubY = minEndY - GRAPH_BRANCH_CLEARANCE_PX;
           const estimatedHub =
-            sourceY + Math.max(24, Math.min(66, (minEndY - sourceY) * 0.34));
-          const hubY = Math.max(sourceY + 12, Math.min(maxHubY, estimatedHub));
+            sourceY + Math.max(GRAPH_STEM_MIN_PX, Math.min(GRAPH_STEM_MAX_PX, (minEndY - sourceY) * 0.4));
+          const hubY = Math.max(sourceY + GRAPH_STEM_MIN_PX, Math.min(maxHubY, estimatedHub));
 
-          if (hubY > sourceY + 8) {
-            const trunkC1Y = sourceY + Math.max(10, (hubY - sourceY) * 0.36);
-            const trunkC2Y = sourceY + Math.max(16, (hubY - sourceY) * 0.74);
+          if (hubY > sourceY + GRAPH_STEM_MIN_PX - 4) {
+            const trunkC1Y = sourceY + Math.max(12, (hubY - sourceY) * 0.42);
+            const trunkC2Y = sourceY + Math.max(20, (hubY - sourceY) * 0.8);
             nextPaths.push({
               id: `${group[0].fromId}:trunk:${Math.round(hubY)}`,
               d: `M ${sourceX} ${sourceY} C ${sourceX} ${trunkC1Y}, ${sourceX} ${trunkC2Y}, ${sourceX} ${hubY}`,
@@ -885,17 +890,17 @@ export function CauseEffectCard({
 
           const total = group.length;
           group.forEach((geometry, position) => {
-            const laneOffset = (position - (total - 1) / 2) * 14;
+            const laneOffset = (position - (total - 1) / 2) * GRAPH_BRANCH_SPREAD_PX;
             const laneX = sourceX + laneOffset;
             const endX = geometry.endX;
             const endY = geometry.endY;
             const c1x = sourceX + laneOffset * 0.58;
-            const c1y = hubY + Math.max(9, Math.min(24, (endY - hubY) * 0.22));
+            const c1y = hubY + Math.max(11, Math.min(28, (endY - hubY) * 0.24));
             const c2x = endX;
-            const c2y = endY - Math.max(12, Math.min(40, (endY - hubY) * 0.44));
+            const c2y = endY - Math.max(14, Math.min(44, (endY - hubY) * 0.46));
             const pathD = `M ${sourceX} ${hubY} C ${c1x} ${c1y}, ${laneX} ${Math.max(
-              hubY + 8,
-              c2y - 12,
+              hubY + 10,
+              c2y - 14,
             )}, ${endX} ${endY}`;
             const headD = buildArrowHeadPath(endX, endY, c2x, c2y);
             nextPaths.push({
@@ -908,11 +913,11 @@ export function CauseEffectCard({
         }
 
         const only = group[0];
-        const verticalDistance = Math.max(42, only.endY - only.startY);
+        const verticalDistance = Math.max(GRAPH_SINGLE_LINK_MIN_VERTICAL_PX, only.endY - only.startY);
         const c1x = only.startX;
-        const c1y = only.startY + Math.min(34, verticalDistance * 0.34);
+        const c1y = only.startY + Math.min(40, verticalDistance * 0.4);
         const c2x = only.endX;
-        const c2y = only.endY - Math.min(34, verticalDistance * 0.46);
+        const c2y = only.endY - Math.min(42, verticalDistance * 0.48);
         const pathD = `M ${only.startX} ${only.startY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${only.endX} ${only.endY}`;
         const headD = buildArrowHeadPath(only.endX, only.endY, c2x, c2y);
         nextPaths.push({
