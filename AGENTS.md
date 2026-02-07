@@ -36,6 +36,32 @@ A desktop app that runs a Life Stream UI. User input becomes **cards**, which ar
 ## Mode Behavior
 In current repo, `src/App.tsx` sets `lifeOsMode = true` (Life Stream is always-on).
 
+## Current Product Baseline (2026-02)
+
+### Semantic rebuild architecture (default behavior)
+- **Day-thread is default:** semantic rebuild reuses one Codex thread per day (`YYYY-MM-DD`).
+- **Per-card threads are deprecated** for semantic rewrite.
+- Rebuild flow: load/create day thread → seed day context (hash-guarded) → rewrite each card in shared thread.
+- Runtime state lives in `Obsidian/Runtime/life-stream.day-thread.<date>.json`.
+- Per-card rewrite logs live in `Obsidian/Runtime/semantic-rewrite/<date>/<cardId>.json`.
+- Rebuild failures must preserve prior semantics; invalid placeholder output is rejected.
+
+### Current UI direction (active spec)
+- Causal graph uses **tiered structure**:
+  - **Tier 1:** parent statement/cause card.
+  - **Tier 2:** concise ranked child cards (summary-level).
+  - **Tier 3:** detail-level cards expanded from selected tier-2 card.
+- **Ranking is required** on tier-2 cards; rank 1 auto-expands by default.
+- Graph connectors should use longer stems + trunk/branch routing (cleaner mind-map readability).
+- Card visuals should feel premium and readable on **desktop + iPad mini** (not generic AI blue-on-black blocks).
+
+### Interaction + readability requirements
+- **No text blur** on selected cards (selection emphasis must keep typography crisp).
+- Mouse + keyboard on desktop; touch-first parity on iPad.
+- Selection actions should be accessible without awkward, persistent split/merge UI clutter.
+- Error status/toasts for rebuild/debug should be persistent enough to read and manually dismiss.
+
+
 ## Commands
 - `just app` — build release bundle *without signing* + open app (preferred for “build and open”).
 - `just app-dev` — open dev mode (hot reload).
@@ -47,7 +73,7 @@ In current repo, `src/App.tsx` sets `lifeOsMode = true` (Life Stream is always-o
 - Skip only when user says **“skip build”** or **“don’t run app.”**
   - **Important:** `lifeos-maintain` is a **Codex skill**, not a shell command. **Never** run `lifeos-maintain` in the terminal.
 ## Optional Shortcut
-- **app-run** remains available as a manual, single-purpose build shortcut.
+- **app-run** has been removed. Use **lifeos-maintain BUILD** for all app build/run requests.
 
 ## Branch Lanes (Current Working Convention)
 - `codex/desktop-stable` → **desktop-known-good** checkpoint (commit: `a35d193`).
