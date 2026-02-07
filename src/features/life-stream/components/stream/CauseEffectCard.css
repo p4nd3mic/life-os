@@ -46,7 +46,7 @@
 
 .life-causal-card__lanes--vertical {
   grid-template-columns: 1fr;
-  gap: 28px;
+  gap: 38px;
 }
 
 .life-causal-card__lane {
@@ -65,13 +65,14 @@
 .life-causal-card--vertical .life-causal-card__lane--right {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px 14px;
-  align-items: start;
-  padding-top: 2px;
+  gap: 16px 16px;
+  align-items: stretch;
+  justify-items: stretch;
+  padding-top: 6px;
 }
 
 .life-causal-card--vertical .life-causal-card__lane--right .life-causal-card__node {
-  min-height: 108px;
+  min-height: 122px;
 }
 
 .life-causal-card--vertical
@@ -388,7 +389,7 @@
 }
 
 .life-causal-card__detail-tier {
-  margin-top: 14px;
+  margin-top: 22px;
   border: 1px dashed rgba(125, 211, 252, 0.5);
   border-radius: 12px;
   background: linear-gradient(
@@ -397,6 +398,22 @@
     rgba(6, 11, 20, 0.8) 100%
   );
   padding: 10px 12px 12px;
+  position: relative;
+}
+
+.life-causal-card__detail-tier::before {
+  content: "";
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  width: 1.5px;
+  height: 14px;
+  transform: translateX(-50%);
+  background: linear-gradient(
+    180deg,
+    rgba(251, 191, 36, 0.84) 0%,
+    rgba(110, 231, 183, 0.76) 100%
+  );
 }
 
 .life-causal-card__detail-tier-header {
