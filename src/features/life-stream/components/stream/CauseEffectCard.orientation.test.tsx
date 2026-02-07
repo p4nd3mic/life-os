@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { CausalCardContent } from "../../types";
 import { CauseEffectCard } from "./CauseEffectCard";
@@ -15,10 +15,42 @@ function makeCausalPayload(): CausalCardContent {
       },
     ],
     rightNodes: [
-      { id: "right-1", text: "Why 1", role: "response", headline: "Faster lock-in" },
-      { id: "right-2", text: "Why 2", role: "response", headline: "Mood boost" },
-      { id: "right-3", text: "Why 3", role: "response", headline: "Story focus" },
-      { id: "right-4", text: "Why 4", role: "response", headline: "Long-tail motivation" },
+      {
+        id: "right-1",
+        text: "Why 1",
+        role: "response",
+        headline: "Faster lock-in",
+        summaryLine: "The structure helps the viewer lock into stakes quickly.",
+        bullets: ["Opens character history early", "Frames immediate conflict"],
+        rank: 2,
+      },
+      {
+        id: "right-2",
+        text: "Why 2",
+        role: "response",
+        headline: "Mood boost",
+        summaryLine: "Tone contrast deepens the emotional impact.",
+        bullets: ["Style shifts from cool to personal", "Makes the turn memorable"],
+        rank: 1,
+      },
+      {
+        id: "right-3",
+        text: "Why 3",
+        role: "response",
+        headline: "Story focus",
+        summaryLine: "Narrative signal becomes clearer after setup.",
+        bullets: ["Improves arc readability", "Raises anticipation"],
+        rank: 3,
+      },
+      {
+        id: "right-4",
+        text: "Why 4",
+        role: "response",
+        headline: "Long-tail motivation",
+        summaryLine: "Keeps momentum through later episodes.",
+        bullets: ["Plants future payoffs", "Strengthens continuity"],
+        rank: 4,
+      },
     ],
     links: [
       { fromId: "left-1", toId: "right-1", strength: 1 },
@@ -78,5 +110,56 @@ describe("CauseEffectCard vertical orientation", () => {
     expect(firstStyle).toContain("--life-node-stagger-y");
     expect(secondStyle).toContain("--life-node-stagger-y");
     expect(firstStyle).not.toEqual(secondStyle);
+  });
+
+  it("auto-expands the top-ranked right node and toggles expansion on click", () => {
+    const { container } = render(
+      <CauseEffectCard
+        cardId="card-expand"
+        cardType="thought"
+        cardTitle="Ranked expansion"
+        causal={makeCausalPayload()}
+        layoutOrientation="vertical"
+        onRestructure={() => {}}
+      />,
+    );
+
+    const selectedNode = container.querySelector(
+      ".life-causal-card__lane--right .life-causal-card__node.is-selected",
+    );
+    expect(selectedNode).toBeTruthy();
+    expect(selectedNode?.querySelector(".life-causal-card__node-rank")?.textContent).toBe("1");
+
+    const detailTier = container.querySelector(".life-causal-card__detail-tier");
+    expect(detailTier).toBeTruthy();
+    expect(detailTier?.textContent?.includes("Mood boost")).toBe(true);
+
+    if (!selectedNode) {
+      throw new Error("expected selected node");
+    }
+    fireEvent.click(selectedNode);
+    const detailTierAfterCollapse = container.querySelector(".life-causal-card__detail-tier");
+    expect(detailTierAfterCollapse).toBeNull();
+  });
+
+  it("keeps right-side cards concise and moves bullets into the third layer", () => {
+    const { container } = render(
+      <CauseEffectCard
+        cardId="card-concise"
+        cardType="thought"
+        cardTitle="Concise layer"
+        causal={makeCausalPayload()}
+        layoutOrientation="vertical"
+        onRestructure={() => {}}
+      />,
+    );
+
+    const rightLaneBullets = container.querySelector(
+      ".life-causal-card__lane--right .life-causal-card__node-bullets",
+    );
+    expect(rightLaneBullets).toBeNull();
+
+    const detailNodes = container.querySelectorAll(".life-causal-card__detail-node");
+    expect(detailNodes.length).toBeGreaterThan(0);
   });
 });
