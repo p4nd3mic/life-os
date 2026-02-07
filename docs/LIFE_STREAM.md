@@ -218,6 +218,40 @@ When `updateEntityFile=true`, Life Stream updates entity markdown frontmatter:
 When `updateEntityEmbed=true`, it also upserts:
 
 - `## Image`
+
+---
+
+## 2026-02 layered causal UI v2 (ranked expansion)
+
+Cause/effect cards now support a **3-tier reading model**:
+
+1. **Tier 1**: source statement/question
+2. **Tier 2**: concise ranked outcomes (`headline` + `summaryLine`)
+3. **Tier 3**: expanded detail bullets for the currently selected Tier 2 card
+
+### Default behavior
+
+- Tier 2 card with `rank = 1` auto-expands first.
+- Clicking another Tier 2 card switches Tier 3 details to that card.
+- Clicking the selected Tier 2 card collapses Tier 3.
+- Desktop keyboard:
+  - `1/2/3...` select ranked Tier 2 cards
+  - `Esc` collapses Tier 3
+
+### Visual + layout upgrades
+
+- longer connector stems and cleaner trunk/branch fanout
+- increased vertical spacing between source and outcome lanes
+- aligned child cards for easier scan patterns
+- premium card surface tokens (reduced “flat AI box” look)
+- “Most useful” badge on top-ranked Tier 2 card
+
+### Key implementation files
+
+- `/Volumes/YouTube 4TB/CodexMonitor-lifeos/src/features/life-stream/components/stream/CauseEffectCard.tsx`
+- `/Volumes/YouTube 4TB/CodexMonitor-lifeos/src/features/life-stream/components/stream/CauseEffectCard.css`
+- `/Volumes/YouTube 4TB/CodexMonitor-lifeos/src/features/life-stream/components/stream/GraphArrowLayer.tsx`
+- `/Volumes/YouTube 4TB/CodexMonitor-lifeos/src/features/life-stream/components/stream/CauseEffectCard.orientation.test.tsx`
 - `<!--life-stream:image-embed-->`
 - `![[Assets/Entities/...]]`
 
