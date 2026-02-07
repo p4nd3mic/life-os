@@ -549,6 +549,7 @@ export function CauseEffectCard({
   const [paths, setPaths] = useState<GraphArrowPath[]>([]);
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [expandedRightNodeId, setExpandedRightNodeId] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const leftNodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -559,6 +560,7 @@ export function CauseEffectCard({
   useEffect(() => {
     setPreviewImage(null);
     setSelectedNodeId(null);
+    setExpandedRightNodeId(null);
   }, [cardId]);
 
   useEffect(() => {
@@ -574,28 +576,39 @@ export function CauseEffectCard({
     return () => window.removeEventListener("keydown", handleEscape);
   }, [previewImage]);
 
+  const rankedRightNodes = useMemo(() => {
+    return [...causal.rightNodes].sort((a, b) => {
+      const leftRank = a.rank ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = b.rank ?? Number.MAX_SAFE_INTEGER;
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return a.id.localeCompare(b.id);
+    });
+  }, [causal.rightNodes]);
+
   const useTailCompaction = cardType === "delivery_session";
-  const hasOverflow = causal.rightNodes.length > TOP_VISIBLE_RIGHT_NODES;
+  const hasOverflow = rankedRightNodes.length > TOP_VISIBLE_RIGHT_NODES;
 
   const primaryRightNodes = useMemo(() => {
     if (!hasOverflow) {
-      return causal.rightNodes;
+      return rankedRightNodes;
     }
     if (useTailCompaction) {
-      return causal.rightNodes.slice(causal.rightNodes.length - TOP_VISIBLE_RIGHT_NODES);
+      return rankedRightNodes.slice(rankedRightNodes.length - TOP_VISIBLE_RIGHT_NODES);
     }
-    return causal.rightNodes.slice(0, TOP_VISIBLE_RIGHT_NODES);
-  }, [causal.rightNodes, hasOverflow, useTailCompaction]);
+    return rankedRightNodes.slice(0, TOP_VISIBLE_RIGHT_NODES);
+  }, [hasOverflow, rankedRightNodes, useTailCompaction]);
 
   const hiddenRightNodes = useMemo(() => {
     if (!hasOverflow) {
       return [];
     }
     if (useTailCompaction) {
-      return causal.rightNodes.slice(0, causal.rightNodes.length - TOP_VISIBLE_RIGHT_NODES);
+      return rankedRightNodes.slice(0, rankedRightNodes.length - TOP_VISIBLE_RIGHT_NODES);
     }
-    return causal.rightNodes.slice(TOP_VISIBLE_RIGHT_NODES);
-  }, [causal.rightNodes, hasOverflow, useTailCompaction]);
+    return rankedRightNodes.slice(TOP_VISIBLE_RIGHT_NODES);
+  }, [hasOverflow, rankedRightNodes, useTailCompaction]);
 
   const overflowNode = useMemo<CausalNode | null>(() => {
     if (hiddenRightNodes.length === 0) {
@@ -620,12 +633,12 @@ export function CauseEffectCard({
       headline: overflowTitle(semanticMode),
       bullets: lines,
       details: lines.join("\n"),
-      role: causal.rightNodes[0]?.role,
+      role: rankedRightNodes[0]?.role,
       rank: hiddenRightNodes[0]?.rank ?? 1,
       groupType: "overflow_summary",
       isImageApplicable: false,
     };
-  }, [cardId, causal.rightNodes, hiddenRightNodes, semanticMode]);
+  }, [cardId, hiddenRightNodes, rankedRightNodes, semanticMode]);
 
   const visibleRightNodes = useMemo(() => {
     if (!overflowNode) {
@@ -655,8 +668,8 @@ export function CauseEffectCard({
     [causal.leftNodes],
   );
   const rightNodeIds = useMemo(
-    () => new Set(causal.rightNodes.map((node) => node.id)),
-    [causal.rightNodes],
+    () => new Set(rankedRightNodes.map((node) => node.id)),
+    [rankedRightNodes],
   );
   const visibleRightNodeIds = useMemo(
     () => new Set(visibleRightNodes.map((node) => node.id)),
@@ -672,6 +685,25 @@ export function CauseEffectCard({
     }
     setSelectedNodeId(null);
   }, [leftNodeIds, rightNodeIds, selectedNodeId]);
+
+  const defaultExpandedRightNodeId = useMemo(() => {
+    const firstPrimary = primaryRightNodes.find((node) => node.groupType !== "overflow_summary");
+    return firstPrimary?.id ?? primaryRightNodes[0]?.id ?? null;
+  }, [primaryRightNodes]);
+
+  useEffect(() => {
+    setExpandedRightNodeId(defaultExpandedRightNodeId);
+  }, [cardId, defaultExpandedRightNodeId]);
+
+  useEffect(() => {
+    if (!expandedRightNodeId) {
+      return;
+    }
+    if (visibleRightNodeIds.has(expandedRightNodeId)) {
+      return;
+    }
+    setExpandedRightNodeId(defaultExpandedRightNodeId);
+  }, [defaultExpandedRightNodeId, expandedRightNodeId, visibleRightNodeIds]);
 
   const visibleLinks = useMemo(() => {
     const base = causal.links.filter((link) => visibleRightNodeIds.has(link.toId));
@@ -994,10 +1026,10 @@ export function CauseEffectCard({
     if (!selectedNodeId) {
       return undefined;
     }
-    return [...causal.leftNodes, ...causal.rightNodes].find(
+    return [...causal.leftNodes, ...rankedRightNodes].find(
       (node) => node.id === selectedNodeId,
     );
-  }, [causal.leftNodes, causal.rightNodes, selectedNodeId]);
+  }, [causal.leftNodes, rankedRightNodes, selectedNodeId]);
 
   const selectedNodeSide: "left" | "right" | null = useMemo(() => {
     if (!selectedNodeId) {
@@ -1023,30 +1055,36 @@ export function CauseEffectCard({
   }, [causal.leftNodes, selectedNodeId, selectedNodeSide]);
 
   const mergeSourceNodeIds = useMemo(() => {
-    if (causal.rightNodes.length < 2) {
+    if (rankedRightNodes.length < 2) {
       return [];
     }
     if (!(selectedNodeSide === "right" && selectedNodeId)) {
-      return causal.rightNodes.slice(0, 2).map((node) => node.id);
+      return rankedRightNodes.slice(0, 2).map((node) => node.id);
     }
 
-    const selectedIndex = causal.rightNodes.findIndex((node) => node.id === selectedNodeId);
+    const selectedIndex = rankedRightNodes.findIndex((node) => node.id === selectedNodeId);
     if (selectedIndex < 0) {
-      return causal.rightNodes.slice(0, 2).map((node) => node.id);
+      return rankedRightNodes.slice(0, 2).map((node) => node.id);
     }
 
-    const selected = causal.rightNodes[selectedIndex];
+    const selected = rankedRightNodes[selectedIndex];
     const partner =
-      causal.rightNodes[selectedIndex + 1] ?? causal.rightNodes[selectedIndex - 1];
+      rankedRightNodes[selectedIndex + 1] ?? rankedRightNodes[selectedIndex - 1];
     if (!partner) {
       return [selected.id];
     }
     return [selected.id, partner.id];
-  }, [causal.rightNodes, selectedNodeId, selectedNodeSide]);
+  }, [rankedRightNodes, selectedNodeId, selectedNodeSide]);
 
-  const handleSelectNode = useCallback((nodeId: string) => {
-    setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
-  }, []);
+  const handleSelectNode = useCallback(
+    (nodeId: string) => {
+      setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
+      if (visibleRightNodeIds.has(nodeId)) {
+        setExpandedRightNodeId((prev) => (prev === nodeId ? null : nodeId));
+      }
+    },
+    [visibleRightNodeIds],
+  );
 
   const handleSplitCause = useCallback(() => {
     if (!splitSourceNodeIds.length) {
@@ -1069,15 +1107,15 @@ export function CauseEffectCard({
   }, [onRestructure, selectedNodeId]);
 
   const handleReframe = useCallback(() => {
-    const hasRewardRoles = causal.rightNodes.some((node) => node.role === "reward");
+    const hasRewardRoles = rankedRightNodes.some((node) => node.role === "reward");
     onRestructure("reframe_mode", {
       sourceNodeIds: selectedNodeId ? [selectedNodeId] : undefined,
       targetMode: hasRewardRoles ? "cause_effect" : "action_reward",
     });
-  }, [causal.rightNodes, onRestructure, selectedNodeId]);
+  }, [onRestructure, rankedRightNodes, selectedNodeId]);
 
   const canSplitCause = splitSourceNodeIds.length > 0;
-  const canMergeEffects = causal.rightNodes.length >= 2;
+  const canMergeEffects = rankedRightNodes.length >= 2;
   const selectedNodeTitle = useMemo(() => {
     if (!selectedNode) {
       return "";
@@ -1151,7 +1189,7 @@ export function CauseEffectCard({
               index={index}
               layoutOrientation={layoutOrientation}
               staggerOffsetPx={rightNodeStaggerOffsets[index] ?? 0}
-              selected={selectedNodeId === node.id}
+              selected={expandedRightNodeId === node.id}
               setRef={registerRightRef}
               onSelectNode={handleSelectNode}
               onRequestNodeImage={onRequestNodeImage}
