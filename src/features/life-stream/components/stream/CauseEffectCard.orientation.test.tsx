@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { CausalCardContent } from "../../types";
 import { CauseEffectCard } from "./CauseEffectCard";
@@ -130,16 +130,116 @@ describe("CauseEffectCard vertical orientation", () => {
     expect(selectedNode).toBeTruthy();
     expect(selectedNode?.querySelector(".life-causal-card__node-rank")?.textContent).toBe("1");
 
-    const detailTier = container.querySelector(".life-causal-card__detail-tier");
-    expect(detailTier).toBeTruthy();
-    expect(detailTier?.textContent?.includes("Mood boost")).toBe(true);
+    const detailInline = container.querySelector(
+      ".life-causal-card__lane--right .life-causal-card__detail-inline",
+    );
+    expect(detailInline).toBeTruthy();
+    expect(detailInline?.textContent?.includes("Style shifts from cool to personal")).toBe(true);
 
     if (!selectedNode) {
       throw new Error("expected selected node");
     }
     fireEvent.click(selectedNode);
-    const detailTierAfterCollapse = container.querySelector(".life-causal-card__detail-tier");
-    expect(detailTierAfterCollapse).toBeNull();
+    const detailInlineAfterCollapse = container.querySelector(
+      ".life-causal-card__lane--right .life-causal-card__detail-inline",
+    );
+    expect(detailInlineAfterCollapse).toBeNull();
+  });
+
+  it("keeps selected cards free of scale transforms to prevent blur artifacts", () => {
+    const { container } = render(
+      <CauseEffectCard
+        cardId="card-no-scale"
+        cardType="thought"
+        cardTitle="No blur selection"
+        causal={makeCausalPayload()}
+        layoutOrientation="vertical"
+        onRestructure={() => {}}
+      />,
+    );
+
+    const selectedNode = container.querySelector(
+      ".life-causal-card__lane--right .life-causal-card__node.is-selected",
+    ) as HTMLElement | null;
+    expect(selectedNode).toBeTruthy();
+
+    const transform = selectedNode ? window.getComputedStyle(selectedNode).transform : "";
+    expect(transform.includes("scale")).toBe(false);
+  });
+
+  it("opens a context menu on right-click and removes persistent action toolbar", () => {
+    const { container } = render(
+      <CauseEffectCard
+        cardId="card-context-menu"
+        cardType="thought"
+        cardTitle="Context actions"
+        causal={makeCausalPayload()}
+        layoutOrientation="vertical"
+        onRestructure={() => {}}
+      />,
+    );
+
+    expect(container.querySelector(".life-causal-card__context-toolbar")).toBeNull();
+
+    const selectedNode = container.querySelector(
+      ".life-causal-card__lane--right .life-causal-card__node.is-selected",
+    ) as HTMLElement | null;
+    expect(selectedNode).toBeTruthy();
+    if (!selectedNode) {
+      throw new Error("expected selected node");
+    }
+
+    fireEvent.contextMenu(selectedNode);
+    expect(screen.getByRole("menu", { name: "Node actions" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "✂️ Split cause" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "🧩 Merge effects" })).toBeTruthy();
+  });
+
+  it("renders tier-3 details inline inside the right lane grid", () => {
+    const { container } = render(
+      <CauseEffectCard
+        cardId="card-detail-inline"
+        cardType="thought"
+        cardTitle="Inline details"
+        causal={makeCausalPayload()}
+        layoutOrientation="vertical"
+        onRestructure={() => {}}
+      />,
+    );
+
+    const rightLane = container.querySelector(".life-causal-card__lane--right");
+    expect(rightLane).toBeTruthy();
+    const detailInline = rightLane?.querySelector(".life-causal-card__detail-inline");
+    expect(detailInline).toBeTruthy();
+    expect(container.querySelector(".life-causal-card__detail-tier")).toBeNull();
+  });
+
+  it("places tier-3 details directly after the expanded tier-2 node", () => {
+    const { container } = render(
+      <CauseEffectCard
+        cardId="card-detail-position"
+        cardType="thought"
+        cardTitle="Detail order"
+        causal={makeCausalPayload()}
+        layoutOrientation="vertical"
+        onRestructure={() => {}}
+      />,
+    );
+
+    const secondRankNode = container.querySelector(
+      '.life-causal-card__lane--right .life-causal-card__node[data-node-id="right-1"]',
+    ) as HTMLElement | null;
+    expect(secondRankNode).toBeTruthy();
+    if (!secondRankNode) {
+      throw new Error("expected rank-2 node");
+    }
+
+    fireEvent.click(secondRankNode);
+    const detailInline = container.querySelector(
+      '.life-causal-card__lane--right .life-causal-card__detail-inline[data-source-node-id="right-1"]',
+    ) as HTMLElement | null;
+    expect(detailInline).toBeTruthy();
+    expect(secondRankNode.nextElementSibling).toBe(detailInline);
   });
 
   it("keeps right-side cards concise and moves bullets into the third layer", () => {

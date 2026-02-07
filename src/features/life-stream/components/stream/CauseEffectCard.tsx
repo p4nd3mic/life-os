@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -36,13 +37,19 @@ type CauseEffectCardProps = {
 const TOP_VISIBLE_RIGHT_NODES = 3;
 const ARROW_HEAD_LENGTH = 13;
 const ARROW_HEAD_WIDTH = 9;
-const GRAPH_STEM_MIN_PX = 24;
-const GRAPH_STEM_MAX_PX = 80;
-const GRAPH_BRANCH_CLEARANCE_PX = 18;
-const GRAPH_BRANCH_SPREAD_PX = 18;
+const GRAPH_STEM_MIN_PX = 32;
+const GRAPH_STEM_MAX_PX = 96;
+const GRAPH_BRANCH_CLEARANCE_PX = 24;
+const GRAPH_BRANCH_SPREAD_PX = 22;
 const GRAPH_SINGLE_LINK_MIN_VERTICAL_PX = 56;
 const IS_JSDOM_ENV =
   typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent);
+
+type ContextMenuState = {
+  nodeId: string;
+  x: number;
+  y: number;
+};
 
 function pathsEqual(previous: GraphArrowPath[], next: GraphArrowPath[]): boolean {
   if (previous.length !== next.length) {
@@ -287,6 +294,19 @@ function resolveRightNodeBullets(
   return fromDetails;
 }
 
+function clampContextMenuPoint(point: { x: number; y: number }) {
+  if (typeof window === "undefined") {
+    return point;
+  }
+  const menuWidth = 260;
+  const menuHeight = 260;
+  const gutter = 12;
+  return {
+    x: Math.max(gutter, Math.min(point.x, window.innerWidth - menuWidth - gutter)),
+    y: Math.max(gutter, Math.min(point.y, window.innerHeight - menuHeight - gutter)),
+  };
+}
+
 function NodeCard({
   node,
   side,
@@ -297,6 +317,7 @@ function NodeCard({
   selected,
   setRef,
   onSelectNode,
+  onOpenContextMenu,
   onRequestNodeImage,
   onPreviewImage,
   onOpenTranscript,
@@ -308,7 +329,8 @@ function NodeCard({
   fallbackTitle?: string;
   selected: boolean;
   setRef: (nodeId: string, element: HTMLDivElement | null) => void;
-  onSelectNode: (nodeId: string) => void;
+  onSelectNode: (nodeId: string, options?: { toggle?: boolean }) => void;
+  onOpenContextMenu: (nodeId: string, point: { x: number; y: number }) => void;
   onRequestNodeImage?: (nodeId: string) => void;
   onPreviewImage?: (imageSrc: string, alt: string) => void;
   onOpenTranscript?: () => void;
@@ -318,6 +340,7 @@ function NodeCard({
 }) {
   const longPressRef = useRef<number | null>(null);
   const didLongPressRef = useRef(false);
+  const longPressPointRef = useRef<{ x: number; y: number } | null>(null);
   const isOverflowSummary = node.groupType === "overflow_summary";
   const isLeftStatement = side === "left";
   const isTopRankedRight = side === "right" && !isOverflowSummary && (node.rank ?? index + 1) === 1;
@@ -361,6 +384,7 @@ function NodeCard({
       window.clearTimeout(longPressRef.current);
       longPressRef.current = null;
     }
+    longPressPointRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -374,13 +398,19 @@ function NodeCard({
       }
       clearLongPress();
       didLongPressRef.current = false;
+      const point = {
+        x: event.clientX,
+        y: event.clientY,
+      };
+      longPressPointRef.current = point;
       longPressRef.current = window.setTimeout(() => {
         didLongPressRef.current = true;
-        onSelectNode(node.id);
+        onSelectNode(node.id, { toggle: false });
+        onOpenContextMenu(node.id, longPressPointRef.current ?? point);
         longPressRef.current = null;
       }, 320);
     },
-    [clearLongPress, isOverflowSummary, node.id, onSelectNode],
+    [clearLongPress, isOverflowSummary, node.id, onOpenContextMenu, onSelectNode],
   );
 
   const handleClick = useCallback(() => {
@@ -391,11 +421,51 @@ function NodeCard({
     if (isOverflowSummary) {
       return;
     }
-    onSelectNode(node.id);
+    onSelectNode(node.id, { toggle: true });
     if (isLeftStatement) {
       onOpenTranscript?.();
     }
   }, [isLeftStatement, isOverflowSummary, node.id, onOpenTranscript, onSelectNode]);
+
+  const handleContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (isOverflowSummary) {
+        return;
+      }
+      event.preventDefault();
+      onSelectNode(node.id, { toggle: false });
+      onOpenContextMenu(node.id, { x: event.clientX, y: event.clientY });
+    },
+    [isOverflowSummary, node.id, onOpenContextMenu, onSelectNode],
+  );
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (isOverflowSummary) {
+        return;
+      }
+
+      if (event.key === "Enter" && event.ctrlKey) {
+        event.preventDefault();
+        const bounds = event.currentTarget.getBoundingClientRect();
+        onSelectNode(node.id, { toggle: false });
+        onOpenContextMenu(node.id, {
+          x: bounds.left + bounds.width / 2,
+          y: bounds.top + Math.min(40, bounds.height / 2),
+        });
+        return;
+      }
+
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onSelectNode(node.id, { toggle: true });
+        if (isLeftStatement) {
+          onOpenTranscript?.();
+        }
+      }
+    },
+    [isLeftStatement, isOverflowSummary, node.id, onOpenContextMenu, onOpenTranscript, onSelectNode],
+  );
 
   return (
     <div
@@ -423,7 +493,11 @@ function NodeCard({
       onPointerDown={handlePointerDown}
       onPointerUp={clearLongPress}
       onPointerLeave={clearLongPress}
+      onPointerCancel={clearLongPress}
       onClick={handleClick}
+      onContextMenu={handleContextMenu}
+      onKeyDown={handleKeyDown}
+      tabIndex={0}
     >
       {side === "right" && !isOverflowSummary && (
         <span className="life-causal-card__node-rank" aria-hidden="true">
@@ -547,6 +621,76 @@ function NodeCard({
   );
 }
 
+function NodeContextMenu({
+  position,
+  selectedNodeTitle,
+  canSplitCause,
+  canMergeEffects,
+  onSplitCause,
+  onMergeEffects,
+  onRelink,
+  onReframe,
+}: {
+  position: { x: number; y: number };
+  selectedNodeTitle: string;
+  canSplitCause: boolean;
+  canMergeEffects: boolean;
+  onSplitCause: () => void;
+  onMergeEffects: () => void;
+  onRelink: () => void;
+  onReframe: () => void;
+}) {
+  return (
+    <div
+      className="life-causal-card__context-menu"
+      role="menu"
+      aria-label="Node actions"
+      style={{ left: position.x, top: position.y }}
+      data-no-toggle
+    >
+      {selectedNodeTitle ? (
+        <div className="life-causal-card__context-menu-header">
+          {selectedNodeTitle}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        role="menuitem"
+        className="life-causal-card__context-menu-item"
+        onClick={onSplitCause}
+        disabled={!canSplitCause}
+      >
+        ✂️ Split cause
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="life-causal-card__context-menu-item"
+        onClick={onMergeEffects}
+        disabled={!canMergeEffects}
+      >
+        🧩 Merge effects
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="life-causal-card__context-menu-item"
+        onClick={onRelink}
+      >
+        🔗 Re-link arrows
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="life-causal-card__context-menu-item"
+        onClick={onReframe}
+      >
+        🔁 Reframe mode
+      </button>
+    </div>
+  );
+}
+
 export function CauseEffectCard({
   cardId,
   cardType,
@@ -568,8 +712,10 @@ export function CauseEffectCard({
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [expandedRightNodeId, setExpandedRightNodeId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const leftNodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const rightNodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const recomputeRafRef = useRef<number | null>(null);
@@ -579,6 +725,7 @@ export function CauseEffectCard({
     setPreviewImage(null);
     setSelectedNodeId(null);
     setExpandedRightNodeId(null);
+    setContextMenu(null);
   }, [cardId]);
 
   useEffect(() => {
@@ -699,10 +846,6 @@ export function CauseEffectCard({
     }
     return visibleRightNodes.find((node) => node.id === expandedRightNodeId) ?? null;
   }, [expandedRightNodeId, visibleRightNodes]);
-  const expandedRightNodeTitle = useMemo(
-    () => (expandedRightNode ? resolveNodeTitle(expandedRightNode) : ""),
-    [expandedRightNode],
-  );
   const expandedRightNodeDetailLines = useMemo(() => {
     if (!expandedRightNode) {
       return [];
@@ -739,6 +882,15 @@ export function CauseEffectCard({
     }
     setSelectedNodeId(null);
   }, [leftNodeIds, rightNodeIds, selectedNodeId]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+    if (!selectedNodeId || contextMenu.nodeId !== selectedNodeId) {
+      setContextMenu(null);
+    }
+  }, [contextMenu, selectedNodeId]);
 
   const defaultExpandedRightNodeId = useMemo(() => {
     const firstPrimary = primaryRightNodes.find((node) => node.groupType !== "overflow_summary");
@@ -777,6 +929,7 @@ export function CauseEffectCard({
 
       if (event.key === "Escape") {
         setExpandedRightNodeId(null);
+        setContextMenu(null);
         return;
       }
 
@@ -794,6 +947,40 @@ export function CauseEffectCard({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [primaryRightNodes]);
+
+  useEffect(() => {
+    if (!contextMenu || typeof window === "undefined") {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setContextMenu(null);
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+      }
+    };
+
+    const handleWindowChange = () => {
+      setContextMenu(null);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("keydown", handleEscape);
+    window.addEventListener("resize", handleWindowChange);
+    window.addEventListener("scroll", handleWindowChange, { passive: true });
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("resize", handleWindowChange);
+      window.removeEventListener("scroll", handleWindowChange);
+    };
+  }, [contextMenu]);
 
   const visibleLinks = useMemo(() => {
     const base = causal.links.filter((link) => visibleRightNodeIds.has(link.toId));
@@ -1167,11 +1354,29 @@ export function CauseEffectCard({
   }, [rankedRightNodes, selectedNodeId, selectedNodeSide]);
 
   const handleSelectNode = useCallback(
-    (nodeId: string) => {
-      setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
+    (nodeId: string, options?: { toggle?: boolean }) => {
+      const shouldToggle = options?.toggle ?? true;
+      setContextMenu(null);
+      setSelectedNodeId((prev) =>
+        shouldToggle ? (prev === nodeId ? null : nodeId) : nodeId,
+      );
       if (visibleRightNodeIds.has(nodeId)) {
-        setExpandedRightNodeId((prev) => (prev === nodeId ? null : nodeId));
+        setExpandedRightNodeId((prev) =>
+          shouldToggle ? (prev === nodeId ? null : nodeId) : nodeId,
+        );
       }
+    },
+    [visibleRightNodeIds],
+  );
+
+  const handleOpenContextMenu = useCallback(
+    (nodeId: string, point: { x: number; y: number }) => {
+      const position = clampContextMenuPoint(point);
+      setSelectedNodeId(nodeId);
+      if (visibleRightNodeIds.has(nodeId)) {
+        setExpandedRightNodeId(nodeId);
+      }
+      setContextMenu({ nodeId, ...position });
     },
     [visibleRightNodeIds],
   );
@@ -1181,6 +1386,7 @@ export function CauseEffectCard({
       return;
     }
     onRestructure("split_cause", { sourceNodeIds: splitSourceNodeIds });
+    setContextMenu(null);
   }, [onRestructure, splitSourceNodeIds]);
 
   const handleMergeEffects = useCallback(() => {
@@ -1188,12 +1394,14 @@ export function CauseEffectCard({
       return;
     }
     onRestructure("merge_effects", { sourceNodeIds: mergeSourceNodeIds });
+    setContextMenu(null);
   }, [mergeSourceNodeIds, onRestructure]);
 
   const handleRelink = useCallback(() => {
     onRestructure("relink_arrows", {
       sourceNodeIds: selectedNodeId ? [selectedNodeId] : undefined,
     });
+    setContextMenu(null);
   }, [onRestructure, selectedNodeId]);
 
   const handleReframe = useCallback(() => {
@@ -1202,6 +1410,7 @@ export function CauseEffectCard({
       sourceNodeIds: selectedNodeId ? [selectedNodeId] : undefined,
       targetMode: hasRewardRoles ? "cause_effect" : "action_reward",
     });
+    setContextMenu(null);
   }, [onRestructure, rankedRightNodes, selectedNodeId]);
 
   const canSplitCause = splitSourceNodeIds.length > 0;
@@ -1257,6 +1466,7 @@ export function CauseEffectCard({
               selected={selectedNodeId === node.id}
               setRef={registerLeftRef}
               onSelectNode={handleSelectNode}
+              onOpenContextMenu={handleOpenContextMenu}
               onOpenTranscript={onOpenTranscript}
               onRequestNodeImage={onRequestNodeImage}
               onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
@@ -1272,87 +1482,65 @@ export function CauseEffectCard({
 
         <div className="life-causal-card__lane life-causal-card__lane--right">
           {visibleRightNodes.map((node, index) => (
-            <NodeCard
-              key={node.id}
-              node={node}
-              side="right"
-              index={index}
-              layoutOrientation={layoutOrientation}
-              staggerOffsetPx={rightNodeStaggerOffsets[index] ?? 0}
-              selected={expandedRightNodeId === node.id}
-              setRef={registerRightRef}
-              onSelectNode={handleSelectNode}
-              onRequestNodeImage={onRequestNodeImage}
-              onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
-              compactRight
-            />
+            <Fragment key={node.id}>
+              <NodeCard
+                node={node}
+                side="right"
+                index={index}
+                layoutOrientation={layoutOrientation}
+                staggerOffsetPx={rightNodeStaggerOffsets[index] ?? 0}
+                selected={expandedRightNodeId === node.id}
+                setRef={registerRightRef}
+                onSelectNode={handleSelectNode}
+                onOpenContextMenu={handleOpenContextMenu}
+                onRequestNodeImage={onRequestNodeImage}
+                onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
+                compactRight
+              />
+              {expandedRightNodeId === node.id && expandedRightNodeDetailLines.length > 0 && (
+                <div
+                  className="life-causal-card__detail-inline"
+                  data-node-tier="3"
+                  data-source-node-id={node.id}
+                  style={
+                    {
+                      gridColumn: "1 / -1",
+                      "--detail-connector-x": "50%",
+                    } as CSSProperties
+                  }
+                >
+                  {expandedRightNodeDetailLines.map((line, detailIndex) => (
+                    <article
+                      key={`${node.id}:detail:${detailIndex}`}
+                      className="life-causal-card__detail-node"
+                    >
+                      <span className="life-causal-card__detail-node-rank" aria-hidden="true">
+                        {detailIndex + 1}
+                      </span>
+                      <p>{line}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </Fragment>
           ))}
         </div>
       </div>
 
-      {expandedRightNode && expandedRightNodeDetailLines.length > 0 && (
-        <section
-          className="life-causal-card__detail-tier"
-          data-node-tier="3"
-          data-source-node-id={expandedRightNode.id}
-        >
-          <header className="life-causal-card__detail-tier-header">
-            <span className="life-causal-card__detail-tier-label">Expanded details</span>
-            <h4 className="life-causal-card__detail-tier-title">{expandedRightNodeTitle}</h4>
-          </header>
-          <div className="life-causal-card__detail-grid">
-            {expandedRightNodeDetailLines.map((line, index) => (
-              <article
-                key={`${expandedRightNode.id}:detail:${index}`}
-                className="life-causal-card__detail-node"
-              >
-                <span className="life-causal-card__detail-node-rank" aria-hidden="true">
-                  {index + 1}
-                </span>
-                <p>{line}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {selectedNode && (
-        <div className="life-causal-card__context-toolbar" data-no-toggle>
-          <span className="life-causal-card__context-selected">
-            Selected {selectedNodeSide === "left" ? "source" : "response"}: {selectedNodeTitle}
-          </span>
-          <div className="life-causal-card__actions">
-            <button
-              type="button"
-              className="life-causal-card__action"
-              onClick={handleSplitCause}
-              disabled={!canSplitCause}
-            >
-              ✂️ Split cause
-            </button>
-            <button
-              type="button"
-              className="life-causal-card__action"
-              onClick={handleMergeEffects}
-              disabled={!canMergeEffects}
-            >
-              🧩 Merge effects
-            </button>
-            <button
-              type="button"
-              className="life-causal-card__action"
-              onClick={handleRelink}
-            >
-              🔗 Re-link arrows
-            </button>
-            <button
-              type="button"
-              className="life-causal-card__action"
-              onClick={handleReframe}
-            >
-              🔁 Reframe mode
-            </button>
-          </div>
+      {contextMenu && selectedNode && (
+        <div ref={contextMenuRef}>
+          <NodeContextMenu
+            position={contextMenu}
+            selectedNodeTitle={`Selected ${
+              selectedNodeSide === "left" ? "source" : "response"
+            }: ${selectedNodeTitle}`}
+            canSplitCause={canSplitCause}
+            canMergeEffects={canMergeEffects}
+            onSplitCause={handleSplitCause}
+            onMergeEffects={handleMergeEffects}
+            onRelink={handleRelink}
+            onReframe={handleReframe}
+          />
         </div>
       )}
 

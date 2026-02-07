@@ -1,22 +1,27 @@
 .life-causal-card {
-  --life-surface-primary: linear-gradient(
+  --life-surface-t1: linear-gradient(
     180deg,
-    rgba(9, 15, 26, 0.96) 0%,
-    rgba(7, 12, 22, 0.9) 100%
+    rgba(14, 20, 32, 0.97) 0%,
+    rgba(10, 16, 28, 0.93) 100%
   );
-  --life-surface-secondary: linear-gradient(
+  --life-surface-t2: linear-gradient(
     180deg,
-    rgba(8, 13, 24, 0.94) 0%,
-    rgba(6, 10, 20, 0.88) 100%
+    rgba(10, 15, 26, 0.95) 0%,
+    rgba(8, 12, 22, 0.9) 100%
+  );
+  --life-surface-t3: linear-gradient(
+    180deg,
+    rgba(6, 10, 20, 0.92) 0%,
+    rgba(4, 8, 16, 0.86) 100%
   );
   --life-surface-selected: linear-gradient(
     180deg,
-    rgba(11, 20, 33, 0.98) 0%,
-    rgba(9, 17, 30, 0.92) 100%
+    rgba(14, 24, 40, 0.98) 0%,
+    rgba(12, 20, 36, 0.94) 100%
   );
   --life-radius-card: 14px;
-  --life-card-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
-  --life-card-highlight: inset 0 1px 0 rgba(186, 230, 253, 0.08);
+  --life-card-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+  --life-card-highlight: inset 0 1px 0 rgba(186, 230, 253, 0.06);
   margin-bottom: 8px;
 }
 
@@ -112,11 +117,10 @@
 
 .life-causal-card__path {
   fill: none;
-  stroke: rgba(245, 208, 90, 0.95);
-  stroke-width: 2.3;
+  stroke-width: 2;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
-  filter: drop-shadow(0 0 4px rgba(245, 208, 90, 0.3));
+  opacity: 0.85;
 }
 
 .life-causal-card__path.is-dimmed {
@@ -124,16 +128,14 @@
 }
 
 .life-causal-card__path.is-trunk {
-  stroke-width: 1.8;
-  stroke-opacity: 0.68;
-  stroke-dasharray: 2 4;
+  stroke-width: 1.6;
+  opacity: 0.55;
 }
 
 .life-causal-card__head {
-  fill: rgba(248, 213, 102, 0.97);
-  stroke: rgba(255, 236, 170, 0.86);
-  stroke-width: 0.9;
-  filter: drop-shadow(0 0 3px rgba(245, 208, 90, 0.45));
+  fill: rgba(52, 211, 153, 0.95);
+  stroke: rgba(167, 243, 208, 0.88);
+  stroke-width: 0.6;
 }
 
 .life-causal-card__head.is-dimmed {
@@ -145,8 +147,8 @@
   position: relative;
   overflow: hidden;
   border-radius: var(--life-radius-card);
-  border: 1px solid var(--border-subtle);
-  background: var(--life-surface-secondary);
+  border: 1px solid rgba(100, 116, 139, 0.42);
+  background: var(--life-surface-t2);
   padding: 12px 13px 12px;
   box-shadow: var(--life-card-shadow), var(--life-card-highlight);
   transition:
@@ -154,51 +156,85 @@
     box-shadow 160ms ease,
     border-color 160ms ease,
     background 160ms ease;
-  will-change: transform;
+  will-change: auto;
   cursor: pointer;
   transform: translate3d(0, var(--life-node-stagger-y), 0);
 }
 
 .life-causal-card__node--left {
-  border-left: 3px solid rgba(251, 191, 36, 0.9);
-  background: var(--life-surface-primary);
+  border-left: 2px solid rgba(250, 204, 21, 0.9);
+  background: var(--life-surface-t1);
+  box-shadow:
+    var(--life-card-shadow),
+    inset 0 1px 0 rgba(255, 250, 230, 0.1);
 }
 
 .life-causal-card__node--right {
-  border-left: 3px solid rgba(52, 211, 153, 0.86);
+  border-left: 2px solid rgba(52, 211, 153, 0.86);
+  border-radius: 16px;
+}
+
+.life-causal-card__node:hover:not(.is-selected) {
+  border-color: rgba(148, 163, 184, 0.5);
+  box-shadow:
+    var(--life-card-shadow),
+    var(--life-card-highlight),
+    0 0 0 1px rgba(148, 163, 184, 0.2);
+}
+
+.life-causal-card__node:focus-visible {
+  outline: 2px solid rgba(96, 165, 250, 0.6);
+  outline-offset: 2px;
 }
 
 .life-causal-card__node.is-selected {
-  border-color: rgba(96, 165, 250, 0.66);
+  border-color: rgba(96, 165, 250, 0.7);
   box-shadow:
-    0 0 0 1px rgba(56, 189, 248, 0.42),
-    0 0 0 3px rgba(56, 189, 248, 0.15),
-    0 14px 30px rgba(0, 0, 0, 0.34);
+    0 0 0 1.5px rgba(56, 189, 248, 0.5),
+    0 0 0 4px rgba(56, 189, 248, 0.12),
+    0 0 16px rgba(56, 189, 248, 0.15),
+    0 16px 36px rgba(0, 0, 0, 0.38);
   background: var(--life-surface-selected);
-  transform: translate3d(0, var(--life-node-stagger-y), 0) scale(1.01);
+  transform: translate3d(0, var(--life-node-stagger-y), 0);
 }
 
 .life-causal-card__node-rank {
   position: absolute;
-  top: 9px;
-  right: 9px;
-  width: 18px;
+  top: 8px;
+  right: 8px;
+  min-width: 18px;
   height: 18px;
   border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
-  background: rgba(15, 23, 42, 0.82);
-  color: rgba(226, 232, 240, 0.9);
+  padding: 0 5px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(15, 23, 42, 0.66);
+  color: rgba(203, 213, 225, 0.9);
   font-size: 10px;
   font-weight: 700;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-shadow: inset 0 1px 0 rgba(226, 232, 240, 0.08);
 }
 
 .life-causal-card__node.is-top-ranked .life-causal-card__node-rank {
-  border-color: rgba(250, 204, 21, 0.7);
-  background: rgba(120, 53, 15, 0.58);
-  color: rgba(254, 240, 138, 0.98);
+  border-color: rgba(252, 211, 77, 0.8);
+  background: linear-gradient(
+    180deg,
+    rgba(217, 119, 6, 0.85) 0%,
+    rgba(161, 98, 7, 0.78) 100%
+  );
+  color: rgba(255, 249, 214, 0.99);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 248, 220, 0.24),
+    0 0 8px rgba(251, 191, 36, 0.2);
+}
+
+.life-causal-card__node.is-top-ranked.life-causal-card__node--right {
+  box-shadow:
+    var(--life-card-shadow),
+    var(--life-card-highlight),
+    inset 2px 0 0 rgba(250, 204, 21, 0.32);
 }
 
 .life-causal-card__node-badge {
@@ -210,18 +246,22 @@
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.03em;
-  color: rgba(254, 240, 138, 0.96);
-  border: 1px solid rgba(250, 204, 21, 0.58);
-  background: rgba(120, 53, 15, 0.44);
+  color: rgba(255, 249, 214, 0.96);
+  border: 1px solid rgba(252, 211, 77, 0.58);
+  background: linear-gradient(
+    180deg,
+    rgba(217, 119, 6, 0.56) 0%,
+    rgba(161, 98, 7, 0.44) 100%
+  );
 }
 
 .life-causal-card__node-title {
-  font-size: clamp(15px, 1.28vw, 20px);
-  font-weight: 760;
+  font-size: clamp(15px, 1.2vw, 18px);
+  font-weight: 720;
   line-height: 1.16;
-  color: rgba(246, 250, 255, 0.99);
+  color: rgba(238, 246, 255, 0.99);
   margin-bottom: 9px;
-  letter-spacing: 0.001em;
+  letter-spacing: -0.005em;
   text-wrap: wrap;
   word-break: normal;
   text-align: center;
@@ -230,7 +270,9 @@
 }
 
 .life-causal-card__node--left .life-causal-card__node-title {
-  font-size: clamp(18px, 1.62vw, 24px);
+  font-size: clamp(20px, 1.8vw, 26px);
+  font-weight: 800;
+  letter-spacing: -0.01em;
   color: rgba(255, 250, 232, 0.99);
 }
 
@@ -271,10 +313,10 @@
 }
 
 .life-causal-card__node-summary-line {
-  font-size: clamp(14px, 1.02vw, 17px);
-  font-weight: 640;
+  font-size: clamp(13px, 0.9vw, 15px);
+  font-weight: 600;
   line-height: 1.34;
-  color: rgba(236, 245, 255, 0.99);
+  color: rgba(200, 218, 240, 0.92);
   letter-spacing: 0.006em;
 }
 
@@ -400,7 +442,7 @@
 
 .life-causal-card__node.is-compact-right .life-causal-card__node-title {
   margin-bottom: 7px;
-  font-size: clamp(15px, 1.18vw, 19px);
+  font-size: clamp(15px, 1.2vw, 18px);
   line-height: 1.2;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -410,91 +452,64 @@
 }
 
 .life-causal-card__node.is-compact-right .life-causal-card__node-summary-line {
-  font-size: clamp(13px, 0.96vw, 15px);
+  font-size: clamp(13px, 0.9vw, 15px);
   line-height: 1.38;
-  color: rgba(216, 232, 248, 0.97);
+  color: rgba(200, 218, 240, 0.92);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.life-causal-card__detail-tier {
-  margin-top: 22px;
-  border: 1px dashed rgba(125, 211, 252, 0.5);
-  border-radius: 12px;
-  background: linear-gradient(
-    180deg,
-    rgba(8, 14, 25, 0.84) 0%,
-    rgba(6, 11, 20, 0.8) 100%
-  );
-  padding: 10px 12px 12px;
+.life-causal-card__detail-inline {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+  padding: 8px 0;
   position: relative;
 }
 
-.life-causal-card__detail-tier::before {
+.life-causal-card__detail-inline::before {
   content: "";
   position: absolute;
-  top: -14px;
-  left: 50%;
+  top: -8px;
+  left: var(--detail-connector-x, 50%);
   width: 1.5px;
-  height: 14px;
+  height: 8px;
   transform: translateX(-50%);
   background: linear-gradient(
     180deg,
-    rgba(251, 191, 36, 0.84) 0%,
-    rgba(110, 231, 183, 0.76) 100%
+    rgba(52, 211, 153, 0.8),
+    rgba(125, 211, 252, 0.6)
   );
-}
-
-.life-causal-card__detail-tier-header {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-bottom: 10px;
-}
-
-.life-causal-card__detail-tier-label {
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: rgba(125, 211, 252, 0.92);
-  font-weight: 720;
-}
-
-.life-causal-card__detail-tier-title {
-  margin: 0;
-  font-size: 16px;
-  line-height: 1.22;
-  color: rgba(241, 245, 249, 0.98);
-}
-
-.life-causal-card__detail-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
 }
 
 .life-causal-card__detail-node {
   position: relative;
-  border: 1px solid rgba(100, 116, 139, 0.4);
-  border-radius: 10px;
-  padding: 8px 10px 8px 30px;
-  background: rgba(2, 6, 16, 0.62);
-  box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  border-left: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 16px;
+  padding: 10px 12px 10px 34px;
+  background: var(--life-surface-t3);
+  box-shadow:
+    inset 0 1px 0 rgba(148, 163, 184, 0.06),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.3);
 }
 
 .life-causal-card__detail-node-rank {
   position: absolute;
-  left: 8px;
-  top: 8px;
-  width: 16px;
+  left: 10px;
+  top: 10px;
+  min-width: 16px;
   height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
-  background: rgba(14, 116, 144, 0.28);
-  border: 1px solid rgba(125, 211, 252, 0.44);
-  color: rgba(186, 230, 253, 0.94);
+  background: rgba(15, 23, 42, 0.58);
+  border: 1px solid rgba(125, 211, 252, 0.36);
+  color: rgba(191, 219, 254, 0.94);
   font-size: 10px;
+  font-weight: 700;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -503,59 +518,61 @@
 .life-causal-card__detail-node p {
   margin: 0;
   font-size: 13px;
-  line-height: 1.42;
-  color: rgba(224, 239, 255, 0.98);
+  font-weight: 500;
+  line-height: 1.46;
+  color: rgba(210, 225, 245, 0.95);
 }
 
-.life-causal-card__context-toolbar {
-  margin-top: 10px;
+.life-causal-card__context-menu {
+  position: fixed;
+  z-index: 1250;
+  width: min(260px, calc(100vw - 20px));
+  border-radius: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.26);
+  background: linear-gradient(
+    180deg,
+    rgba(8, 14, 26, 0.98) 0%,
+    rgba(6, 10, 20, 0.94) 100%
+  );
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.44),
+    inset 0 1px 0 rgba(226, 232, 240, 0.08);
+  padding: 8px;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid rgba(96, 165, 250, 0.3);
-  background: rgba(8, 15, 27, 0.78);
-  border-radius: 10px;
-  padding: 8px 10px;
-  width: fit-content;
-  max-width: 100%;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.life-causal-card__context-selected {
+.life-causal-card__context-menu-header {
   font-size: 11px;
-  color: rgba(186, 230, 253, 0.96);
-  border: 1px solid rgba(125, 211, 252, 0.32);
-  background: rgba(14, 116, 144, 0.22);
-  border-radius: 999px;
-  padding: 4px 8px;
-  max-width: min(620px, 100%);
+  color: rgba(186, 230, 253, 0.94);
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  background: rgba(14, 116, 144, 0.12);
+  border-radius: 9px;
+  padding: 6px 8px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.life-causal-card__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.life-causal-card__action {
-  border-radius: 8px;
-  border: 1px solid var(--border-subtle);
-  background: rgba(15, 23, 42, 0.64);
-  color: var(--text-stronger);
-  padding: 5px 9px;
-  font-size: 11px;
+.life-causal-card__context-menu-item {
+  border-radius: 9px;
+  border: 1px solid rgba(100, 116, 139, 0.38);
+  background: rgba(15, 23, 42, 0.7);
+  color: rgba(226, 232, 240, 0.94);
+  padding: 7px 9px;
+  font-size: 12px;
+  text-align: left;
   cursor: pointer;
 }
 
-.life-causal-card__action:hover:not(:disabled) {
-  border-color: var(--border-accent);
-  color: var(--text-primary);
+.life-causal-card__context-menu-item:hover:not(:disabled) {
+  border-color: rgba(125, 211, 252, 0.54);
+  color: rgba(240, 249, 255, 0.99);
+  background: rgba(14, 116, 144, 0.24);
 }
 
-.life-causal-card__action:disabled {
+.life-causal-card__context-menu-item:disabled {
   opacity: 0.42;
   cursor: not-allowed;
 }
@@ -629,7 +646,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .life-causal-card__detail-grid {
+  .life-causal-card__detail-inline {
     grid-template-columns: 1fr;
   }
 
@@ -655,14 +672,5 @@
 
   .life-causal-card__node--left .life-causal-card__node-title {
     font-size: clamp(17px, 5.8vw, 23px);
-  }
-
-  .life-causal-card__context-toolbar {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .life-causal-card__context-selected {
-    max-width: 100%;
   }
 }

@@ -68,6 +68,7 @@
   margin: 0;
   background: transparent;
   border: none;
+  overflow: visible;
 }
 
 .life-graph-card__transcript {
@@ -217,6 +218,7 @@
 
 .life-card-bubble__expanded-wrap.is-graph {
   margin-top: 8px;
+  overflow: visible;
 }
 
 .life-card-bubble__image {
