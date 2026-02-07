@@ -1,28 +1,13 @@
 .life-causal-card {
-  --life-surface-t1: linear-gradient(
-    180deg,
-    rgba(14, 20, 32, 0.97) 0%,
-    rgba(10, 16, 28, 0.93) 100%
-  );
-  --life-surface-t2: linear-gradient(
-    180deg,
-    rgba(10, 15, 26, 0.95) 0%,
-    rgba(8, 12, 22, 0.9) 100%
-  );
-  --life-surface-t3: linear-gradient(
-    180deg,
-    rgba(6, 10, 20, 0.92) 0%,
-    rgba(4, 8, 16, 0.86) 100%
-  );
-  --life-surface-selected: linear-gradient(
-    180deg,
-    rgba(14, 24, 40, 0.98) 0%,
-    rgba(12, 20, 36, 0.94) 100%
-  );
+  position: relative;
+  --life-surface-t1: linear-gradient(168deg, rgba(22, 20, 17, 0.98) 0%, rgba(18, 16, 14, 0.95) 60%, rgba(16, 14, 12, 0.93) 100%);
+  --life-surface-t2: linear-gradient(172deg, rgba(18, 16, 14, 0.96) 0%, rgba(14, 12, 10, 0.92) 100%);
+  --life-surface-t3: linear-gradient(175deg, rgba(14, 12, 10, 0.94) 0%, rgba(10, 8, 6, 0.88) 100%);
+  --life-surface-selected: linear-gradient(168deg, rgba(24, 20, 16, 0.98) 0%, rgba(20, 18, 14, 0.95) 100%);
   --life-radius-card: 14px;
-  --life-card-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
-  --life-card-highlight: inset 0 1px 0 rgba(186, 230, 253, 0.06);
-  margin-bottom: 8px;
+  --life-card-shadow: 0 8px 24px rgba(0, 0, 0, 0.32), 0 2px 6px rgba(0, 0, 0, 0.18);
+  --life-card-highlight: inset 0 1px 0 rgba(255, 248, 230, 0.08);
+  margin-bottom: 12px;
 }
 
 .life-causal-card__labels {
@@ -55,7 +40,7 @@
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: clamp(20px, 3.6vw, 52px);
+  gap: clamp(28px, 4.2vw, 56px);
 }
 
 .life-causal-card--vertical .life-causal-card__labels {
@@ -86,23 +71,30 @@
 }
 
 .life-causal-card--vertical .life-causal-card__lane--right {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px 16px;
-  align-items: stretch;
-  justify-items: stretch;
-  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 36px;
+  padding-top: 0;
+  position: relative;
+  contain: layout;
 }
 
-.life-causal-card--vertical .life-causal-card__lane--right .life-causal-card__node {
-  min-height: 122px;
-}
-
-.life-causal-card--vertical
-  .life-causal-card__lane--right
-  .life-causal-card__node.is-overflow-summary {
-  grid-column: 1 / -1;
-  margin-top: 2px;
+.life-causal-card--vertical .life-causal-card__lane--right::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 0;
+  bottom: 24px;
+  width: 2px;
+  background: linear-gradient(
+    180deg,
+    rgba(251, 191, 36, 0.6) 0%,
+    rgba(110, 231, 183, 0.5) 40%,
+    rgba(110, 231, 183, 0.15) 100%
+  );
+  border-radius: 1px;
+  z-index: 0;
 }
 
 .life-causal-card__links {
@@ -111,31 +103,31 @@
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 1;
+  z-index: 3;
   overflow: visible;
 }
 
 .life-causal-card__path {
   fill: none;
-  stroke-width: 2;
+  stroke-width: 1.5;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
-  opacity: 0.85;
-}
-
-.life-causal-card__path.is-dimmed {
-  stroke-opacity: 0.44;
-}
-
-.life-causal-card__path.is-trunk {
-  stroke-width: 1.6;
   opacity: 0.55;
 }
 
+.life-causal-card__path.is-dimmed {
+  stroke-opacity: 0.32;
+}
+
+.life-causal-card__path.is-trunk {
+  stroke-width: 1.2;
+  opacity: 0.38;
+}
+
 .life-causal-card__head {
-  fill: rgba(52, 211, 153, 0.95);
-  stroke: rgba(167, 243, 208, 0.88);
-  stroke-width: 0.6;
+  fill: rgba(52, 211, 153, 0.7);
+  stroke: rgba(167, 243, 208, 0.6);
+  stroke-width: 0.5;
 }
 
 .life-causal-card__head.is-dimmed {
@@ -147,9 +139,9 @@
   position: relative;
   overflow: hidden;
   border-radius: var(--life-radius-card);
-  border: 1px solid rgba(100, 116, 139, 0.42);
+  border: 1px solid rgba(100, 96, 82, 0.42);
   background: var(--life-surface-t2);
-  padding: 12px 13px 12px;
+  padding: 14px 16px 14px;
   box-shadow: var(--life-card-shadow), var(--life-card-highlight);
   transition:
     transform 150ms ease,
@@ -162,16 +154,20 @@
 }
 
 .life-causal-card__node--left {
-  border-left: 2px solid rgba(250, 204, 21, 0.9);
+  border-left: 3px solid rgba(250, 204, 21, 0.9);
   background: var(--life-surface-t1);
   box-shadow:
     var(--life-card-shadow),
-    inset 0 1px 0 rgba(255, 250, 230, 0.1);
+    inset 0 1px 0 rgba(255, 250, 230, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2);
 }
 
 .life-causal-card__node--right {
-  border-left: 2px solid rgba(52, 211, 153, 0.86);
+  border-left: 3px solid rgba(52, 211, 153, 0.86);
   border-radius: 16px;
+  box-shadow:
+    var(--life-card-shadow),
+    inset 0 1px 0 rgba(167, 243, 208, 0.06);
 }
 
 .life-causal-card__node:hover:not(.is-selected) {
@@ -218,19 +214,16 @@
 }
 
 .life-causal-card__node.is-top-ranked .life-causal-card__node-rank {
-  border-color: rgba(252, 211, 77, 0.8);
-  background: linear-gradient(
-    180deg,
-    rgba(217, 119, 6, 0.85) 0%,
-    rgba(161, 98, 7, 0.78) 100%
-  );
-  color: rgba(255, 249, 214, 0.99);
+  background: linear-gradient(135deg, rgba(161, 127, 44, 0.6), rgba(120, 96, 36, 0.5));
+  border-color: rgba(250, 204, 21, 0.5);
+  color: rgba(250, 240, 200, 0.95);
   box-shadow:
     inset 0 1px 0 rgba(255, 248, 220, 0.24),
     0 0 8px rgba(251, 191, 36, 0.2);
 }
 
 .life-causal-card__node.is-top-ranked.life-causal-card__node--right {
+  padding-top: 36px;
   box-shadow:
     var(--life-card-shadow),
     var(--life-card-highlight),
@@ -259,7 +252,7 @@
   font-size: clamp(15px, 1.2vw, 18px);
   font-weight: 720;
   line-height: 1.16;
-  color: rgba(238, 246, 255, 0.99);
+  color: #E0DDD5;
   margin-bottom: 9px;
   letter-spacing: -0.005em;
   text-wrap: wrap;
@@ -272,8 +265,8 @@
 .life-causal-card__node--left .life-causal-card__node-title {
   font-size: clamp(20px, 1.8vw, 26px);
   font-weight: 800;
-  letter-spacing: -0.01em;
-  color: rgba(255, 250, 232, 0.99);
+  letter-spacing: -0.012em;
+  color: #E8E4D9;
 }
 
 .life-causal-card__node-image {
@@ -316,7 +309,7 @@
   font-size: clamp(13px, 0.9vw, 15px);
   font-weight: 600;
   line-height: 1.34;
-  color: rgba(200, 218, 240, 0.92);
+  color: rgba(200, 196, 188, 0.92);
   letter-spacing: 0.006em;
 }
 
@@ -424,16 +417,12 @@
 
 .life-causal-card__node.is-overflow-summary {
   border-style: dashed;
-  border-color: rgba(125, 211, 252, 0.5);
-  background: linear-gradient(
-    180deg,
-    rgba(8, 14, 25, 0.93) 0%,
-    rgba(8, 14, 25, 0.82) 100%
-  );
+  border-color: rgba(168, 162, 148, 0.4);
+  background: linear-gradient(180deg, rgba(14, 12, 10, 0.93) 0%, rgba(14, 12, 10, 0.82) 100%);
 }
 
 .life-causal-card__node.is-overflow-summary .life-causal-card__node-title {
-  color: rgba(220, 239, 255, 0.99);
+  color: rgba(224, 221, 213, 0.95);
 }
 
 .life-causal-card__node.is-compact-right {
@@ -454,35 +443,93 @@
 .life-causal-card__node.is-compact-right .life-causal-card__node-summary-line {
   font-size: clamp(13px, 0.9vw, 15px);
   line-height: 1.38;
-  color: rgba(200, 218, 240, 0.92);
+  color: rgba(200, 196, 188, 0.92);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.life-causal-card__detail-inline {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 8px;
-  padding: 8px 0;
-  position: relative;
+/* Spine Flow: compressed bar state */
+.life-causal-card--vertical .life-causal-card__node.is-compact-right:not(.is-selected) {
+  min-height: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
 }
 
-.life-causal-card__detail-inline::before {
+.life-causal-card--vertical .life-causal-card__node.is-compact-right:not(.is-selected)
+  .life-causal-card__node-title {
+  font-size: 14px;
+  font-weight: 640;
+  margin-bottom: 0;
+  -webkit-line-clamp: 1;
+  text-align: left;
+}
+
+.life-causal-card--vertical .life-causal-card__node.is-compact-right:not(.is-selected)
+  .life-causal-card__node-summary-line {
+  display: none;
+}
+
+/* Spine Flow: expanded child state */
+.life-causal-card--vertical .life-causal-card__node.is-compact-right.is-selected {
+  min-height: 0;
+  padding: 16px 18px;
+}
+
+/* Spine Flow: hover lift on non-selected children */
+.life-causal-card--vertical .life-causal-card__lane--right .life-causal-card__node:hover:not(.is-selected) {
+  transform: translateY(-2px);
+}
+
+/* Spine Flow: transition animations */
+.life-causal-card--vertical .life-causal-card__lane--right .life-causal-card__node {
+  transition:
+    transform 180ms cubic-bezier(0.22, 0.68, 0.36, 1),
+    padding 200ms ease,
+    box-shadow 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+/* Spine Flow: overflow node compact */
+.life-causal-card--vertical .life-causal-card__node.is-overflow-summary {
+  min-height: 0;
+  padding: 8px 14px;
+  border-style: dashed;
+  opacity: 0.8;
+}
+
+.life-causal-card__detail-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(125, 211, 252, 0.12);
+}
+
+.life-causal-card__detail-section-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: rgba(125, 211, 252, 0.7);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.life-causal-card__detail-section-label::before {
   content: "";
-  position: absolute;
-  top: -8px;
-  left: var(--detail-connector-x, 50%);
-  width: 1.5px;
-  height: 8px;
-  transform: translateX(-50%);
-  background: linear-gradient(
-    180deg,
-    rgba(52, 211, 153, 0.8),
-    rgba(125, 211, 252, 0.6)
-  );
+  width: 16px;
+  height: 1.5px;
+  background: linear-gradient(90deg, rgba(52, 211, 153, 0.6), rgba(125, 211, 252, 0.4));
+  border-radius: 1px;
+}
+
+.life-causal-card__detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
 }
 
 .life-causal-card__detail-node {
@@ -642,26 +689,12 @@
     gap: 14px;
   }
 
-  .life-causal-card--vertical .life-causal-card__lane--right {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .life-causal-card__detail-inline {
+  .life-causal-card__detail-grid {
     grid-template-columns: 1fr;
-  }
-
-  .life-causal-card--vertical
-    .life-causal-card__lane--right
-    .life-causal-card__node.is-overflow-summary {
-    grid-column: 1 / -1;
   }
 }
 
 @media (max-width: 720px) {
-  .life-causal-card--vertical .life-causal-card__lane--right {
-    grid-template-columns: 1fr;
-  }
-
   .life-causal-card__links {
     display: none;
   }
@@ -673,4 +706,66 @@
   .life-causal-card__node--left .life-causal-card__node-title {
     font-size: clamp(17px, 5.8vw, 23px);
   }
+}
+
+/* ─── Phase 3b: Noise texture overlay ─── */
+.life-causal-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
+  border-radius: var(--life-radius-card);
+  mix-blend-mode: overlay;
+}
+
+/* ─── Inline label (between parent and spine) ─── */
+.life-causal-card__lane-label--inline {
+  padding-left: 36px;
+  margin-top: 8px;
+  margin-bottom: 6px;
+}
+
+/* ─── Spine Flow: inline detail expansion ─── */
+.life-causal-card__node-inline-details {
+  margin-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 10px;
+  overflow: hidden;
+  animation: spineFlowExpand 220ms cubic-bezier(0.22, 0.68, 0.36, 1) forwards;
+}
+
+@keyframes spineFlowExpand {
+  from { opacity: 0; max-height: 0; }
+  to { opacity: 1; max-height: 600px; }
+}
+
+.life-causal-card__node-inline-detail-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.life-causal-card__node-inline-detail-list li {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 6px;
+  align-items: start;
+  font-size: 13px;
+  line-height: 1.42;
+  color: rgba(210, 206, 198, 0.95);
+}
+
+.life-causal-card__node-inline-detail-rank {
+  color: rgba(110, 231, 183, 0.7);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  padding-top: 2px;
 }

@@ -1,5 +1,4 @@
 import {
-  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -35,8 +34,8 @@ type CauseEffectCardProps = {
 };
 
 const TOP_VISIBLE_RIGHT_NODES = 3;
-const ARROW_HEAD_LENGTH = 13;
-const ARROW_HEAD_WIDTH = 9;
+const ARROW_HEAD_LENGTH = 10;
+const ARROW_HEAD_WIDTH = 7;
 const GRAPH_STEM_MIN_PX = 32;
 const GRAPH_STEM_MAX_PX = 96;
 const GRAPH_BRANCH_CLEARANCE_PX = 24;
@@ -322,6 +321,8 @@ function NodeCard({
   onPreviewImage,
   onOpenTranscript,
   compactRight = false,
+  isExpanded = false,
+  detailLines,
 }: {
   node: CausalNode;
   side: "left" | "right";
@@ -337,6 +338,8 @@ function NodeCard({
   layoutOrientation: "horizontal" | "vertical";
   staggerOffsetPx?: number;
   compactRight?: boolean;
+  isExpanded?: boolean;
+  detailLines?: string[];
 }) {
   const longPressRef = useRef<number | null>(null);
   const didLongPressRef = useRef(false);
@@ -534,6 +537,19 @@ function NodeCard({
 
       {!isOverflowSummary && summaryLine && (
         <div className="life-causal-card__node-summary-line">{summaryLine}</div>
+      )}
+
+      {side === "right" && isExpanded && detailLines && detailLines.length > 0 && (
+        <div className="life-causal-card__node-inline-details" data-node-tier="3">
+          <ul className="life-causal-card__node-inline-detail-list">
+            {detailLines.map((line, i) => (
+              <li key={`${node.id}:inline:${i}`}>
+                <span className="life-causal-card__node-inline-detail-rank" aria-hidden="true">{i + 1}</span>
+                <span>{line}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {isOverflowSummary && (
@@ -816,14 +832,10 @@ export function CauseEffectCard({
   }, [overflowNode, primaryRightNodes]);
 
   const rightNodeStaggerOffsets = useMemo(() => {
-    if (!isVerticalLayout) {
-      return visibleRightNodes.map(() => 0);
-    }
+    if (isVerticalLayout) return visibleRightNodes.map(() => 0);
     const pattern = [-8, 7, -4, 10, -2, 6];
     return visibleRightNodes.map((node, index) => {
-      if (node.groupType === "overflow_summary") {
-        return 5;
-      }
+      if (node.groupType === "overflow_summary") return 5;
       return pattern[index % pattern.length];
     });
   }, [isVerticalLayout, visibleRightNodes]);
@@ -1029,6 +1041,10 @@ export function CauseEffectCard({
   }, []);
 
   const recomputeLinkPathsNow = useCallback(() => {
+    if (isVerticalLayout) {
+      setPaths((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
     const container = containerRef.current;
     if (!container) {
       setPaths((previous) => (previous.length === 0 ? previous : []));
@@ -1444,9 +1460,11 @@ export function CauseEffectCard({
         <div className="life-causal-card__lane-label life-causal-card__lane-label--left">
           {leftLaneLabel}
         </div>
-        <div className="life-causal-card__lane-label life-causal-card__lane-label--right">
-          {rightLaneLabel}
-        </div>
+        {!isVerticalLayout && (
+          <div className="life-causal-card__lane-label life-causal-card__lane-label--right">
+            {rightLaneLabel}
+          </div>
+        )}
       </div>
 
       <div
@@ -1474,58 +1492,71 @@ export function CauseEffectCard({
           ))}
         </div>
 
-        <GraphArrowLayer
-          paths={paths}
-          gradientId={gradientId}
-          orientation={layoutOrientation}
-        />
+        {!isVerticalLayout && (
+          <GraphArrowLayer
+            paths={paths}
+            gradientId={gradientId}
+            orientation={layoutOrientation}
+          />
+        )}
+
+        {isVerticalLayout && (
+          <div className="life-causal-card__lane-label life-causal-card__lane-label--right life-causal-card__lane-label--inline">
+            {rightLaneLabel}
+          </div>
+        )}
 
         <div className="life-causal-card__lane life-causal-card__lane--right">
           {visibleRightNodes.map((node, index) => (
-            <Fragment key={node.id}>
-              <NodeCard
-                node={node}
-                side="right"
-                index={index}
-                layoutOrientation={layoutOrientation}
-                staggerOffsetPx={rightNodeStaggerOffsets[index] ?? 0}
-                selected={expandedRightNodeId === node.id}
-                setRef={registerRightRef}
-                onSelectNode={handleSelectNode}
-                onOpenContextMenu={handleOpenContextMenu}
-                onRequestNodeImage={onRequestNodeImage}
-                onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
-                compactRight
-              />
-              {expandedRightNodeId === node.id && expandedRightNodeDetailLines.length > 0 && (
-                <div
-                  className="life-causal-card__detail-inline"
-                  data-node-tier="3"
-                  data-source-node-id={node.id}
-                  style={
-                    {
-                      gridColumn: "1 / -1",
-                      "--detail-connector-x": "50%",
-                    } as CSSProperties
-                  }
-                >
-                  {expandedRightNodeDetailLines.map((line, detailIndex) => (
-                    <article
-                      key={`${node.id}:detail:${detailIndex}`}
-                      className="life-causal-card__detail-node"
-                    >
-                      <span className="life-causal-card__detail-node-rank" aria-hidden="true">
-                        {detailIndex + 1}
-                      </span>
-                      <p>{line}</p>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </Fragment>
+            <NodeCard
+              key={node.id}
+              node={node}
+              side="right"
+              index={index}
+              layoutOrientation={layoutOrientation}
+              staggerOffsetPx={rightNodeStaggerOffsets[index] ?? 0}
+              selected={expandedRightNodeId === node.id}
+              setRef={registerRightRef}
+              onSelectNode={handleSelectNode}
+              onOpenContextMenu={handleOpenContextMenu}
+              onRequestNodeImage={onRequestNodeImage}
+              onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
+              compactRight
+              isExpanded={isVerticalLayout && expandedRightNodeId === node.id}
+              detailLines={
+                isVerticalLayout && expandedRightNodeId === node.id
+                  ? expandedRightNodeDetailLines
+                  : undefined
+              }
+            />
           ))}
         </div>
       </div>
+
+      {!isVerticalLayout && expandedRightNode && expandedRightNodeDetailLines.length > 0 && (
+        <div
+          className="life-causal-card__detail-section"
+          data-node-tier="3"
+          data-source-node-id={expandedRightNode.id}
+        >
+          <div className="life-causal-card__detail-section-label">
+            {resolveNodeTitle(expandedRightNode)}
+          </div>
+          <div className="life-causal-card__detail-grid">
+            {expandedRightNodeDetailLines.map((line, detailIndex) => (
+              <article
+                key={`${expandedRightNode.id}:detail:${detailIndex}`}
+                className="life-causal-card__detail-node"
+              >
+                <span className="life-causal-card__detail-node-rank" aria-hidden="true">
+                  {detailIndex + 1}
+                </span>
+                <p>{line}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
 
       {contextMenu && selectedNode && (
         <div ref={contextMenuRef}>

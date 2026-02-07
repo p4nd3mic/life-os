@@ -88,7 +88,7 @@ describe("CauseEffectCard vertical orientation", () => {
     expect(overflow?.textContent?.includes("More reasons")).toBe(true);
   });
 
-  it("adds stagger offsets to right-side nodes in vertical mode", () => {
+  it("renders right nodes in a single-column spine with zero stagger", () => {
     const { container } = render(
       <CauseEffectCard
         cardId="card-stagger"
@@ -107,12 +107,11 @@ describe("CauseEffectCard vertical orientation", () => {
 
     const firstStyle = rightNodes[0]?.getAttribute("style") ?? "";
     const secondStyle = rightNodes[1]?.getAttribute("style") ?? "";
-    expect(firstStyle).toContain("--life-node-stagger-y");
-    expect(secondStyle).toContain("--life-node-stagger-y");
-    expect(firstStyle).not.toEqual(secondStyle);
+    expect(firstStyle).toContain("--life-node-stagger-y: 0px");
+    expect(secondStyle).toContain("--life-node-stagger-y: 0px");
   });
 
-  it("auto-expands the top-ranked right node and toggles expansion on click", () => {
+  it("auto-expands the top-ranked right node with inline details and toggles on click", () => {
     const { container } = render(
       <CauseEffectCard
         cardId="card-expand"
@@ -130,20 +129,20 @@ describe("CauseEffectCard vertical orientation", () => {
     expect(selectedNode).toBeTruthy();
     expect(selectedNode?.querySelector(".life-causal-card__node-rank")?.textContent).toBe("1");
 
-    const detailInline = container.querySelector(
-      ".life-causal-card__lane--right .life-causal-card__detail-inline",
+    const inlineDetails = selectedNode?.querySelector(
+      ".life-causal-card__node-inline-details",
     );
-    expect(detailInline).toBeTruthy();
-    expect(detailInline?.textContent?.includes("Style shifts from cool to personal")).toBe(true);
+    expect(inlineDetails).toBeTruthy();
+    expect(inlineDetails?.textContent?.includes("Style shifts from cool to personal")).toBe(true);
 
     if (!selectedNode) {
       throw new Error("expected selected node");
     }
     fireEvent.click(selectedNode);
-    const detailInlineAfterCollapse = container.querySelector(
-      ".life-causal-card__lane--right .life-causal-card__detail-inline",
+    const inlineDetailsAfterCollapse = container.querySelector(
+      ".life-causal-card__node-inline-details",
     );
-    expect(detailInlineAfterCollapse).toBeNull();
+    expect(inlineDetailsAfterCollapse).toBeNull();
   });
 
   it("keeps selected cards free of scale transforms to prevent blur artifacts", () => {
@@ -195,7 +194,7 @@ describe("CauseEffectCard vertical orientation", () => {
     expect(screen.getByRole("menuitem", { name: "🧩 Merge effects" })).toBeTruthy();
   });
 
-  it("renders tier-3 details inline inside the right lane grid", () => {
+  it("renders tier-3 details inline within the expanded node, not as a separate section", () => {
     const { container } = render(
       <CauseEffectCard
         cardId="card-detail-inline"
@@ -207,14 +206,15 @@ describe("CauseEffectCard vertical orientation", () => {
       />,
     );
 
-    const rightLane = container.querySelector(".life-causal-card__lane--right");
-    expect(rightLane).toBeTruthy();
-    const detailInline = rightLane?.querySelector(".life-causal-card__detail-inline");
-    expect(detailInline).toBeTruthy();
+    const detailSection = container.querySelector(".life-causal-card__detail-section");
+    expect(detailSection).toBeNull();
+
+    const inlineDetails = container.querySelector(".life-causal-card__node-inline-details");
+    expect(inlineDetails).toBeTruthy();
     expect(container.querySelector(".life-causal-card__detail-tier")).toBeNull();
   });
 
-  it("places tier-3 details directly after the expanded tier-2 node", () => {
+  it("shows inline details with data-node-tier inside the clicked tier-2 node", () => {
     const { container } = render(
       <CauseEffectCard
         cardId="card-detail-position"
@@ -235,14 +235,13 @@ describe("CauseEffectCard vertical orientation", () => {
     }
 
     fireEvent.click(secondRankNode);
-    const detailInline = container.querySelector(
-      '.life-causal-card__lane--right .life-causal-card__detail-inline[data-source-node-id="right-1"]',
+    const inlineDetails = secondRankNode.querySelector(
+      '[data-node-tier="3"]',
     ) as HTMLElement | null;
-    expect(detailInline).toBeTruthy();
-    expect(secondRankNode.nextElementSibling).toBe(detailInline);
+    expect(inlineDetails).toBeTruthy();
   });
 
-  it("keeps right-side cards concise and moves bullets into the third layer", () => {
+  it("keeps right-side cards concise and shows bullets as inline detail list", () => {
     const { container } = render(
       <CauseEffectCard
         cardId="card-concise"
@@ -259,11 +258,13 @@ describe("CauseEffectCard vertical orientation", () => {
     );
     expect(rightLaneBullets).toBeNull();
 
-    const detailNodes = container.querySelectorAll(".life-causal-card__detail-node");
-    expect(detailNodes.length).toBeGreaterThan(0);
+    const inlineDetailItems = container.querySelectorAll(
+      ".life-causal-card__node-inline-detail-list li",
+    );
+    expect(inlineDetailItems.length).toBeGreaterThan(0);
   });
 
-  it("renders trunk connector paths for ranked fanout links", () => {
+  it("uses CSS spine instead of SVG connectors in vertical mode", () => {
     const { container } = render(
       <CauseEffectCard
         cardId="card-geometry"
@@ -276,9 +277,9 @@ describe("CauseEffectCard vertical orientation", () => {
     );
 
     const allPaths = container.querySelectorAll(".life-causal-card__path");
-    expect(allPaths.length).toBeGreaterThan(0);
+    expect(allPaths.length).toBe(0);
 
-    const trunkPaths = container.querySelectorAll(".life-causal-card__path.is-trunk");
-    expect(trunkPaths.length).toBeGreaterThan(0);
+    const rightLane = container.querySelector(".life-causal-card__lane--right");
+    expect(rightLane).toBeTruthy();
   });
 });
