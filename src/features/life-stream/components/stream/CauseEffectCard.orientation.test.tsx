@@ -162,4 +162,23 @@ describe("CauseEffectCard vertical orientation", () => {
     const detailNodes = container.querySelectorAll(".life-causal-card__detail-node");
     expect(detailNodes.length).toBeGreaterThan(0);
   });
+
+  it("renders trunk connector paths for ranked fanout links", () => {
+    const { container } = render(
+      <CauseEffectCard
+        cardId="card-geometry"
+        cardType="thought"
+        cardTitle="Connector geometry"
+        causal={makeCausalPayload()}
+        layoutOrientation="vertical"
+        onRestructure={() => {}}
+      />,
+    );
+
+    const allPaths = container.querySelectorAll(".life-causal-card__path");
+    expect(allPaths.length).toBeGreaterThan(0);
+
+    const trunkPaths = container.querySelectorAll(".life-causal-card__path.is-trunk");
+    expect(trunkPaths.length).toBeGreaterThan(0);
+  });
 });
