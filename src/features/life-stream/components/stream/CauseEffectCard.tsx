@@ -320,6 +320,7 @@ function NodeCard({
   const didLongPressRef = useRef(false);
   const isOverflowSummary = node.groupType === "overflow_summary";
   const isLeftStatement = side === "left";
+  const isTopRankedRight = side === "right" && !isOverflowSummary && (node.rank ?? index + 1) === 1;
 
   const image = node.image;
   const hasImage = image?.status === "ready" && Boolean(image?.url);
@@ -406,6 +407,7 @@ function NodeCard({
         selected ? "is-selected" : "",
         isOverflowSummary ? "is-overflow-summary" : "",
         compactRight ? "is-compact-right" : "",
+        isTopRankedRight ? "is-top-ranked" : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -426,6 +428,11 @@ function NodeCard({
       {side === "right" && !isOverflowSummary && (
         <span className="life-causal-card__node-rank" aria-hidden="true">
           {node.rank ?? index + 1}
+        </span>
+      )}
+      {isTopRankedRight && (
+        <span className="life-causal-card__node-badge" aria-hidden="true">
+          Most useful
         </span>
       )}
 
@@ -751,6 +758,42 @@ export function CauseEffectCard({
     }
     setExpandedRightNodeId(defaultExpandedRightNodeId);
   }, [defaultExpandedRightNodeId, expandedRightNodeId, visibleRightNodeIds]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tagName = target?.tagName?.toLowerCase();
+      if (
+        tagName === "input" ||
+        tagName === "textarea" ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+
+      if (event.key === "Escape") {
+        setExpandedRightNodeId(null);
+        return;
+      }
+
+      if (/^[1-9]$/.test(event.key)) {
+        const index = Number.parseInt(event.key, 10) - 1;
+        const candidate = primaryRightNodes[index];
+        if (!candidate || candidate.groupType === "overflow_summary") {
+          return;
+        }
+        setExpandedRightNodeId(candidate.id);
+        setSelectedNodeId(candidate.id);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [primaryRightNodes]);
 
   const visibleLinks = useMemo(() => {
     const base = causal.links.filter((link) => visibleRightNodeIds.has(link.toId));
