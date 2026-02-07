@@ -295,6 +295,7 @@ function NodeCard({
   onRequestNodeImage,
   onPreviewImage,
   onOpenTranscript,
+  compactRight = false,
 }: {
   node: CausalNode;
   side: "left" | "right";
@@ -308,6 +309,7 @@ function NodeCard({
   onOpenTranscript?: () => void;
   layoutOrientation: "horizontal" | "vertical";
   staggerOffsetPx?: number;
+  compactRight?: boolean;
 }) {
   const longPressRef = useRef<number | null>(null);
   const didLongPressRef = useRef(false);
@@ -331,8 +333,11 @@ function NodeCard({
 
   const overflowLines = useMemo(() => resolveOverflowLines(node), [node]);
   const rightDetailBullets = useMemo(
-    () => (isLeftStatement || isOverflowSummary ? [] : resolveRightNodeBullets(node, normalizedTitle)),
-    [isLeftStatement, isOverflowSummary, node, normalizedTitle],
+    () =>
+      isLeftStatement || isOverflowSummary || compactRight
+        ? []
+        : resolveRightNodeBullets(node, normalizedTitle),
+    [compactRight, isLeftStatement, isOverflowSummary, node, normalizedTitle],
   );
   const overflowStart = useMemo(
     () => Math.max(1, node.rank ?? TOP_VISIBLE_RIGHT_NODES + 1),
@@ -395,6 +400,7 @@ function NodeCard({
         `life-causal-card__node--${side}`,
         selected ? "is-selected" : "",
         isOverflowSummary ? "is-overflow-summary" : "",
+        compactRight ? "is-compact-right" : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -675,6 +681,42 @@ export function CauseEffectCard({
     () => new Set(visibleRightNodes.map((node) => node.id)),
     [visibleRightNodes],
   );
+  const expandedRightNode = useMemo(() => {
+    if (!expandedRightNodeId) {
+      return null;
+    }
+    return visibleRightNodes.find((node) => node.id === expandedRightNodeId) ?? null;
+  }, [expandedRightNodeId, visibleRightNodes]);
+  const expandedRightNodeTitle = useMemo(
+    () => (expandedRightNode ? resolveNodeTitle(expandedRightNode) : ""),
+    [expandedRightNode],
+  );
+  const expandedRightNodeDetailLines = useMemo(() => {
+    if (!expandedRightNode) {
+      return [];
+    }
+
+    if (expandedRightNode.groupType === "overflow_summary") {
+      return resolveOverflowLines(expandedRightNode).slice(0, 16);
+    }
+
+    const normalizedTitle = normalizeSemantic(resolveNodeTitle(expandedRightNode));
+    const bullets = resolveRightNodeBullets(expandedRightNode, normalizedTitle);
+    if (bullets.length > 0) {
+      return bullets;
+    }
+
+    const summaryLine = expandedRightNode.summaryLine?.trim();
+    if (summaryLine) {
+      return [summaryLine];
+    }
+
+    return (expandedRightNode.details ?? expandedRightNode.text)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .slice(0, 16);
+  }, [expandedRightNode]);
 
   useEffect(() => {
     if (!selectedNodeId) {
@@ -1194,10 +1236,37 @@ export function CauseEffectCard({
               onSelectNode={handleSelectNode}
               onRequestNodeImage={onRequestNodeImage}
               onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
+              compactRight
             />
           ))}
         </div>
       </div>
+
+      {expandedRightNode && expandedRightNodeDetailLines.length > 0 && (
+        <section
+          className="life-causal-card__detail-tier"
+          data-node-tier="3"
+          data-source-node-id={expandedRightNode.id}
+        >
+          <header className="life-causal-card__detail-tier-header">
+            <span className="life-causal-card__detail-tier-label">Expanded details</span>
+            <h4 className="life-causal-card__detail-tier-title">{expandedRightNodeTitle}</h4>
+          </header>
+          <div className="life-causal-card__detail-grid">
+            {expandedRightNodeDetailLines.map((line, index) => (
+              <article
+                key={`${expandedRightNode.id}:detail:${index}`}
+                className="life-causal-card__detail-node"
+              >
+                <span className="life-causal-card__detail-node-rank" aria-hidden="true">
+                  {index + 1}
+                </span>
+                <p>{line}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {selectedNode && (
         <div className="life-causal-card__context-toolbar" data-no-toggle>
