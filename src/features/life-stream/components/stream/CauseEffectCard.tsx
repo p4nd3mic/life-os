@@ -33,7 +33,6 @@ type CauseEffectCardProps = {
   onRequestNodeImage?: (nodeId: string) => void;
 };
 
-const TOP_VISIBLE_RIGHT_NODES = 3;
 const ARROW_HEAD_LENGTH = 10;
 const ARROW_HEAD_WIDTH = 7;
 const GRAPH_STEM_MIN_PX = 32;
@@ -89,13 +88,6 @@ function laneLabel(side: "left" | "right", mode: CausalSemanticMode): string {
     return side === "left" ? "❓ QUESTION" : "💬 RESPONSE";
   }
   return side === "left" ? "🧩 CAUSE" : "✨ EFFECT";
-}
-
-function overflowTitle(mode: CausalSemanticMode): string {
-  if (mode === "statement_why") return "More reasons";
-  if (mode === "action_reward") return "More outcomes";
-  if (mode === "question_response") return "More responses";
-  return "More effects";
 }
 
 function normalizeSemantic(value: string): string {
@@ -320,9 +312,6 @@ function NodeCard({
   onRequestNodeImage,
   onPreviewImage,
   onOpenTranscript,
-  compactRight = false,
-  isExpanded = false,
-  detailLines,
 }: {
   node: CausalNode;
   side: "left" | "right";
@@ -337,9 +326,6 @@ function NodeCard({
   onOpenTranscript?: () => void;
   layoutOrientation: "horizontal" | "vertical";
   staggerOffsetPx?: number;
-  compactRight?: boolean;
-  isExpanded?: boolean;
-  detailLines?: string[];
 }) {
   const longPressRef = useRef<number | null>(null);
   const didLongPressRef = useRef(false);
@@ -366,13 +352,13 @@ function NodeCard({
   const overflowLines = useMemo(() => resolveOverflowLines(node), [node]);
   const rightDetailBullets = useMemo(
     () =>
-      isLeftStatement || isOverflowSummary || compactRight
+      isLeftStatement || isOverflowSummary
         ? []
         : resolveRightNodeBullets(node, normalizedTitle),
-    [compactRight, isLeftStatement, isOverflowSummary, node, normalizedTitle],
+    [isLeftStatement, isOverflowSummary, node, normalizedTitle],
   );
   const overflowStart = useMemo(
-    () => Math.max(1, node.rank ?? TOP_VISIBLE_RIGHT_NODES + 1),
+    () => Math.max(1, node.rank ?? 4),
     [node.rank],
   );
 
@@ -479,7 +465,6 @@ function NodeCard({
         `life-causal-card__node--${side}`,
         selected ? "is-selected" : "",
         isOverflowSummary ? "is-overflow-summary" : "",
-        compactRight ? "is-compact-right" : "",
         isTopRankedRight ? "is-top-ranked" : "",
       ]
         .filter(Boolean)
@@ -537,19 +522,6 @@ function NodeCard({
 
       {!isOverflowSummary && summaryLine && (
         <div className="life-causal-card__node-summary-line">{summaryLine}</div>
-      )}
-
-      {side === "right" && isExpanded && detailLines && detailLines.length > 0 && (
-        <div className="life-causal-card__node-inline-details" data-node-tier="3">
-          <ul className="life-causal-card__node-inline-detail-list">
-            {detailLines.map((line, i) => (
-              <li key={`${node.id}:inline:${i}`}>
-                <span className="life-causal-card__node-inline-detail-rank" aria-hidden="true">{i + 1}</span>
-                <span>{line}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
       )}
 
       {isOverflowSummary && (
@@ -707,9 +679,193 @@ function NodeContextMenu({
   );
 }
 
+function TimelineSection({
+  node,
+  index,
+  bullets,
+  selected,
+  onSelectNode,
+  onOpenContextMenu,
+  onRequestNodeImage,
+  onPreviewImage,
+  setRef,
+}: {
+  node: CausalNode;
+  index: number;
+  bullets: string[];
+  selected: boolean;
+  onSelectNode: (nodeId: string, options?: { toggle?: boolean }) => void;
+  onOpenContextMenu: (nodeId: string, point: { x: number; y: number }) => void;
+  onRequestNodeImage?: (nodeId: string) => void;
+  onPreviewImage?: (imageSrc: string, alt: string) => void;
+  setRef: (nodeId: string, element: HTMLDivElement | null) => void;
+}) {
+  const longPressRef = useRef<number | null>(null);
+  const didLongPressRef = useRef(false);
+  const longPressPointRef = useRef<{ x: number; y: number } | null>(null);
+
+  const image = node.image;
+  const hasImage = image?.status === "ready" && Boolean(image?.url);
+  const imageSrc = useMemo(() => resolveImageSrc(image?.url), [image?.url]);
+
+  const nodeTitle = useMemo(() => resolveNodeTitle(node), [node]);
+  const normalizedTitle = useMemo(() => normalizeSemantic(nodeTitle), [nodeTitle]);
+
+  const summaryLine = useMemo(
+    () => resolveSummaryLine(node, normalizedTitle, { suppress: false }),
+    [node, normalizedTitle],
+  );
+
+  const clearLongPress = useCallback(() => {
+    if (longPressRef.current !== null) {
+      window.clearTimeout(longPressRef.current);
+      longPressRef.current = null;
+    }
+    longPressPointRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    return () => clearLongPress();
+  }, [clearLongPress]);
+
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.pointerType !== "touch") return;
+      clearLongPress();
+      didLongPressRef.current = false;
+      const point = { x: event.clientX, y: event.clientY };
+      longPressPointRef.current = point;
+      longPressRef.current = window.setTimeout(() => {
+        didLongPressRef.current = true;
+        onSelectNode(node.id, { toggle: false });
+        onOpenContextMenu(node.id, longPressPointRef.current ?? point);
+        longPressRef.current = null;
+      }, 320);
+    },
+    [clearLongPress, node.id, onOpenContextMenu, onSelectNode],
+  );
+
+  const handleClick = useCallback(() => {
+    if (didLongPressRef.current) {
+      didLongPressRef.current = false;
+      return;
+    }
+    onSelectNode(node.id, { toggle: true });
+  }, [node.id, onSelectNode]);
+
+  const handleContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      onSelectNode(node.id, { toggle: false });
+      onOpenContextMenu(node.id, { x: event.clientX, y: event.clientY });
+    },
+    [node.id, onOpenContextMenu, onSelectNode],
+  );
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "Enter" && event.ctrlKey) {
+        event.preventDefault();
+        const bounds = event.currentTarget.getBoundingClientRect();
+        onSelectNode(node.id, { toggle: false });
+        onOpenContextMenu(node.id, {
+          x: bounds.left + bounds.width / 2,
+          y: bounds.top + Math.min(40, bounds.height / 2),
+        });
+        return;
+      }
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onSelectNode(node.id, { toggle: true });
+      }
+    },
+    [node.id, onOpenContextMenu, onSelectNode],
+  );
+
+  return (
+    <div
+      ref={(element) => setRef(node.id, element)}
+      id={nodeAnchorId(node.id)}
+      className={[
+        "life-timeline-section",
+        selected ? "is-selected" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      data-node-id={node.id}
+      onPointerDown={handlePointerDown}
+      onPointerUp={clearLongPress}
+      onPointerLeave={clearLongPress}
+      onPointerCancel={clearLongPress}
+      onClick={handleClick}
+      onContextMenu={handleContextMenu}
+      onKeyDown={handleKeyDown}
+      tabIndex={0}
+    >
+      <div className="life-timeline-section__dot" aria-hidden="true" />
+
+      <h3 className="life-timeline-section__header">
+        <span className="life-timeline-section__rank" aria-hidden="true">
+          {node.rank ?? index + 1}
+        </span>
+        {nodeTitle}
+      </h3>
+
+      {summaryLine && (
+        <p className="life-timeline-section__summary">{summaryLine}</p>
+      )}
+
+      {hasImage && (
+        <button
+          type="button"
+          className="life-timeline-section__image-button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onPreviewImage?.(imageSrc, nodeTitle);
+          }}
+          data-no-toggle
+        >
+          <img
+            src={imageSrc}
+            alt={nodeTitle}
+            loading="lazy"
+          />
+        </button>
+      )}
+
+      {bullets.length > 0 && (
+        <ul className="life-timeline-section__bullets" data-no-toggle>
+          {bullets.map((line, i) => (
+            <li key={`${node.id}:bullet:${i}`}>
+              <span className="life-timeline-section__bullet-num" aria-hidden="true">{i + 1}</span>
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {image?.status === "missing" && onRequestNodeImage && (
+        <div className="life-causal-card__node-status">
+          Missing image
+          <button
+            type="button"
+            className="life-causal-card__node-image-action"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRequestNodeImage(node.id);
+            }}
+            data-no-toggle
+          >
+            Set image
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function CauseEffectCard({
   cardId,
-  cardType,
   cardTitle,
   causal,
   layoutOrientation = "vertical",
@@ -727,7 +883,6 @@ export function CauseEffectCard({
   const [paths, setPaths] = useState<GraphArrowPath[]>([]);
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [expandedRightNodeId, setExpandedRightNodeId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -740,7 +895,6 @@ export function CauseEffectCard({
   useEffect(() => {
     setPreviewImage(null);
     setSelectedNodeId(null);
-    setExpandedRightNodeId(null);
     setContextMenu(null);
   }, [cardId]);
 
@@ -768,68 +922,18 @@ export function CauseEffectCard({
     });
   }, [causal.rightNodes]);
 
-  const useTailCompaction = cardType === "delivery_session";
-  const hasOverflow = rankedRightNodes.length > TOP_VISIBLE_RIGHT_NODES;
+  const visibleRightNodes = rankedRightNodes;
 
-  const primaryRightNodes = useMemo(() => {
-    if (!hasOverflow) {
-      return rankedRightNodes;
-    }
-    if (useTailCompaction) {
-      return rankedRightNodes.slice(rankedRightNodes.length - TOP_VISIBLE_RIGHT_NODES);
-    }
-    return rankedRightNodes.slice(0, TOP_VISIBLE_RIGHT_NODES);
-  }, [hasOverflow, rankedRightNodes, useTailCompaction]);
-
-  const hiddenRightNodes = useMemo(() => {
-    if (!hasOverflow) {
-      return [];
-    }
-    if (useTailCompaction) {
-      return rankedRightNodes.slice(0, rankedRightNodes.length - TOP_VISIBLE_RIGHT_NODES);
-    }
-    return rankedRightNodes.slice(TOP_VISIBLE_RIGHT_NODES);
-  }, [hasOverflow, rankedRightNodes, useTailCompaction]);
-
-  const overflowNode = useMemo<CausalNode | null>(() => {
-    if (hiddenRightNodes.length === 0) {
-      return null;
-    }
-
-    const lines = hiddenRightNodes.map((node) => {
+  const rightNodeBulletsMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const node of rankedRightNodes) {
+      if (node.groupType === "overflow_summary") continue;
       const title = resolveNodeTitle(node);
-      const summary = (node.summaryLine ?? "").trim();
-      const normalizedTitle = normalizeSemantic(title);
-      const normalizedSummary = normalizeSemantic(summary);
-      return (
-        summary.length > 0 && normalizedSummary !== normalizedTitle
-          ? `${title} — ${summary}`
-          : title
-      );
-    });
-
-    return {
-      id: `${cardId}:right:overflow-summary`,
-      text: lines.join("\n"),
-      headline: overflowTitle(semanticMode),
-      bullets: lines,
-      details: lines.join("\n"),
-      role: rankedRightNodes[0]?.role,
-      rank: hiddenRightNodes[0]?.rank ?? 1,
-      groupType: "overflow_summary",
-      isImageApplicable: false,
-    };
-  }, [cardId, hiddenRightNodes, rankedRightNodes, semanticMode]);
-
-  const visibleRightNodes = useMemo(() => {
-    if (!overflowNode) {
-      return primaryRightNodes;
+      const nTitle = normalizeSemantic(title);
+      map.set(node.id, resolveRightNodeBullets(node, nTitle));
     }
-    return [
-      ...primaryRightNodes,
-      overflowNode,
-    ];
-  }, [overflowNode, primaryRightNodes]);
+    return map;
+  }, [rankedRightNodes]);
 
   const rightNodeStaggerOffsets = useMemo(() => {
     if (isVerticalLayout) return visibleRightNodes.map(() => 0);
@@ -848,42 +952,6 @@ export function CauseEffectCard({
     () => new Set(rankedRightNodes.map((node) => node.id)),
     [rankedRightNodes],
   );
-  const visibleRightNodeIds = useMemo(
-    () => new Set(visibleRightNodes.map((node) => node.id)),
-    [visibleRightNodes],
-  );
-  const expandedRightNode = useMemo(() => {
-    if (!expandedRightNodeId) {
-      return null;
-    }
-    return visibleRightNodes.find((node) => node.id === expandedRightNodeId) ?? null;
-  }, [expandedRightNodeId, visibleRightNodes]);
-  const expandedRightNodeDetailLines = useMemo(() => {
-    if (!expandedRightNode) {
-      return [];
-    }
-
-    if (expandedRightNode.groupType === "overflow_summary") {
-      return resolveOverflowLines(expandedRightNode).slice(0, 16);
-    }
-
-    const normalizedTitle = normalizeSemantic(resolveNodeTitle(expandedRightNode));
-    const bullets = resolveRightNodeBullets(expandedRightNode, normalizedTitle);
-    if (bullets.length > 0) {
-      return bullets;
-    }
-
-    const summaryLine = expandedRightNode.summaryLine?.trim();
-    if (summaryLine) {
-      return [summaryLine];
-    }
-
-    return (expandedRightNode.details ?? expandedRightNode.text)
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .slice(0, 16);
-  }, [expandedRightNode]);
 
   useEffect(() => {
     if (!selectedNodeId) {
@@ -904,25 +972,6 @@ export function CauseEffectCard({
     }
   }, [contextMenu, selectedNodeId]);
 
-  const defaultExpandedRightNodeId = useMemo(() => {
-    const firstPrimary = primaryRightNodes.find((node) => node.groupType !== "overflow_summary");
-    return firstPrimary?.id ?? primaryRightNodes[0]?.id ?? null;
-  }, [primaryRightNodes]);
-
-  useEffect(() => {
-    setExpandedRightNodeId(defaultExpandedRightNodeId);
-  }, [cardId, defaultExpandedRightNodeId]);
-
-  useEffect(() => {
-    if (!expandedRightNodeId) {
-      return;
-    }
-    if (visibleRightNodeIds.has(expandedRightNodeId)) {
-      return;
-    }
-    setExpandedRightNodeId(defaultExpandedRightNodeId);
-  }, [defaultExpandedRightNodeId, expandedRightNodeId, visibleRightNodeIds]);
-
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -940,25 +989,26 @@ export function CauseEffectCard({
       }
 
       if (event.key === "Escape") {
-        setExpandedRightNodeId(null);
+        setSelectedNodeId(null);
         setContextMenu(null);
         return;
       }
 
       if (/^[1-9]$/.test(event.key)) {
         const index = Number.parseInt(event.key, 10) - 1;
-        const candidate = primaryRightNodes[index];
+        const candidate = rankedRightNodes[index];
         if (!candidate || candidate.groupType === "overflow_summary") {
           return;
         }
-        setExpandedRightNodeId(candidate.id);
         setSelectedNodeId(candidate.id);
+        const element = rightNodeRefs.current.get(candidate.id);
+        element?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [primaryRightNodes]);
+  }, [rankedRightNodes]);
 
   useEffect(() => {
     if (!contextMenu || typeof window === "undefined") {
@@ -995,34 +1045,9 @@ export function CauseEffectCard({
   }, [contextMenu]);
 
   const visibleLinks = useMemo(() => {
-    const base = causal.links.filter((link) => visibleRightNodeIds.has(link.toId));
-    if (!overflowNode || causal.leftNodes.length === 0) {
-      return base;
-    }
-
-    const overflowFromId = isVerticalLayout
-      ? primaryRightNodes[Math.floor((primaryRightNodes.length - 1) / 2)]?.id ??
-        causal.leftNodes[0].id
-      : causal.leftNodes[0].id;
-
-    return [
-      ...base,
-      {
-        id: `${cardId}:link:overflow`,
-        fromId: overflowFromId,
-        toId: overflowNode.id,
-        strength: 0.84,
-      },
-    ];
-  }, [
-    cardId,
-    causal.leftNodes,
-    causal.links,
-    isVerticalLayout,
-    overflowNode,
-    primaryRightNodes,
-    visibleRightNodeIds,
-  ]);
+    if (isVerticalLayout) return [];
+    return causal.links.filter((link) => rightNodeIds.has(link.toId));
+  }, [causal.links, isVerticalLayout, rightNodeIds]);
 
   const registerLeftRef = useCallback((nodeId: string, element: HTMLDivElement | null) => {
     if (element) {
@@ -1376,25 +1401,17 @@ export function CauseEffectCard({
       setSelectedNodeId((prev) =>
         shouldToggle ? (prev === nodeId ? null : nodeId) : nodeId,
       );
-      if (visibleRightNodeIds.has(nodeId)) {
-        setExpandedRightNodeId((prev) =>
-          shouldToggle ? (prev === nodeId ? null : nodeId) : nodeId,
-        );
-      }
     },
-    [visibleRightNodeIds],
+    [],
   );
 
   const handleOpenContextMenu = useCallback(
     (nodeId: string, point: { x: number; y: number }) => {
       const position = clampContextMenuPoint(point);
       setSelectedNodeId(nodeId);
-      if (visibleRightNodeIds.has(nodeId)) {
-        setExpandedRightNodeId(nodeId);
-      }
       setContextMenu({ nodeId, ...position });
     },
-    [visibleRightNodeIds],
+    [],
   );
 
   const handleSplitCause = useCallback(() => {
@@ -1506,57 +1523,40 @@ export function CauseEffectCard({
           </div>
         )}
 
-        <div className="life-causal-card__lane life-causal-card__lane--right">
-          {visibleRightNodes.map((node, index) => (
-            <NodeCard
-              key={node.id}
-              node={node}
-              side="right"
-              index={index}
-              layoutOrientation={layoutOrientation}
-              staggerOffsetPx={rightNodeStaggerOffsets[index] ?? 0}
-              selected={expandedRightNodeId === node.id}
-              setRef={registerRightRef}
-              onSelectNode={handleSelectNode}
-              onOpenContextMenu={handleOpenContextMenu}
-              onRequestNodeImage={onRequestNodeImage}
-              onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
-              compactRight
-              isExpanded={isVerticalLayout && expandedRightNodeId === node.id}
-              detailLines={
-                isVerticalLayout && expandedRightNodeId === node.id
-                  ? expandedRightNodeDetailLines
-                  : undefined
-              }
-            />
-          ))}
+        <div className={`life-causal-card__lane life-causal-card__lane--right${isVerticalLayout ? " life-causal-card__lane--timeline" : ""}`}>
+          {isVerticalLayout
+            ? visibleRightNodes.map((node, index) => (
+                <TimelineSection
+                  key={node.id}
+                  node={node}
+                  index={index}
+                  bullets={rightNodeBulletsMap.get(node.id) ?? []}
+                  selected={selectedNodeId === node.id}
+                  setRef={registerRightRef}
+                  onSelectNode={handleSelectNode}
+                  onOpenContextMenu={handleOpenContextMenu}
+                  onRequestNodeImage={onRequestNodeImage}
+                  onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
+                />
+              ))
+            : visibleRightNodes.map((node, index) => (
+                <NodeCard
+                  key={node.id}
+                  node={node}
+                  side="right"
+                  index={index}
+                  layoutOrientation={layoutOrientation}
+                  staggerOffsetPx={rightNodeStaggerOffsets[index] ?? 0}
+                  selected={selectedNodeId === node.id}
+                  setRef={registerRightRef}
+                  onSelectNode={handleSelectNode}
+                  onOpenContextMenu={handleOpenContextMenu}
+                  onRequestNodeImage={onRequestNodeImage}
+                  onPreviewImage={(src, alt) => setPreviewImage({ src, alt })}
+                />
+              ))}
         </div>
       </div>
-
-      {!isVerticalLayout && expandedRightNode && expandedRightNodeDetailLines.length > 0 && (
-        <div
-          className="life-causal-card__detail-section"
-          data-node-tier="3"
-          data-source-node-id={expandedRightNode.id}
-        >
-          <div className="life-causal-card__detail-section-label">
-            {resolveNodeTitle(expandedRightNode)}
-          </div>
-          <div className="life-causal-card__detail-grid">
-            {expandedRightNodeDetailLines.map((line, detailIndex) => (
-              <article
-                key={`${expandedRightNode.id}:detail:${detailIndex}`}
-                className="life-causal-card__detail-node"
-              >
-                <span className="life-causal-card__detail-node-rank" aria-hidden="true">
-                  {detailIndex + 1}
-                </span>
-                <p>{line}</p>
-              </article>
-            ))}
-          </div>
-        </div>
-      )}
 
       {contextMenu && selectedNode && (
         <div ref={contextMenuRef}>
