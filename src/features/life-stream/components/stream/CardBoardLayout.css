@@ -6,10 +6,10 @@
 }
 
 .card-board-layout__grid {
-  width: min(1360px, 100%);
+  width: min(1400px, 100%);
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  gap: 15px;
   align-items: stretch;
 }
 
@@ -30,13 +30,15 @@
 @media (max-width: 1100px) {
   .card-board-layout__grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
+    gap: 13px;
+    width: min(1100px, 100%);
   }
 }
 
 @media (max-width: 720px) {
   .card-board-layout__grid {
     grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
+    gap: 11px;
+    width: 100%;
   }
 }

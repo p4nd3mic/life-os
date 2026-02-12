@@ -202,6 +202,52 @@ function resolveNodeTitle(node: CausalNode, fallbackTitle?: string): string {
   return "Details";
 }
 
+function resolveBoardNodeTitle(node: CausalNode, fallbackTitle?: string): string {
+  const headline = node.headline?.trim();
+  if (headline && !isGenericNodeTitle(headline)) {
+    return headline;
+  }
+
+  const explicitTitle = node.title?.trim();
+  if (explicitTitle && !isGenericNodeTitle(explicitTitle)) {
+    return explicitTitle;
+  }
+
+  const fallback = fallbackTitle?.trim();
+  if (fallback && !isGenericNodeTitle(fallback)) {
+    return fallback;
+  }
+
+  const summaryLine = node.summaryLine?.trim();
+  if (summaryLine && !isGenericNodeTitle(summaryLine)) {
+    const clause = summaryLine
+      .split(/(?:\s*[-–—:;]\s*|\s*,\s*)/)
+      .map((part) => part.trim())
+      .find((part) => part.length >= 22 && part.length <= 150);
+    if (clause) {
+      return clause;
+    }
+    if (summaryLine.length <= 160) {
+      return summaryLine;
+    }
+  }
+
+  const detailSentence = (node.details ?? node.text)
+    .split(/[\n.!?]/)
+    .map((item) => item.trim())
+    .find((item) => item.length > 12 && !isGenericNodeTitle(item));
+  if (detailSentence) {
+    return detailSentence.length > 170
+      ? `${detailSentence.slice(0, 167).trimEnd()}…`
+      : detailSentence;
+  }
+
+  const fallbackTitleText = resolveNodeTitle(node, fallbackTitle);
+  return fallbackTitleText.length > 170
+    ? `${fallbackTitleText.slice(0, 167).trimEnd()}…`
+    : fallbackTitleText;
+}
+
 function resolveSummaryLine(
   node: CausalNode,
   normalizedTitle: string,
@@ -341,6 +387,11 @@ function NodeCard({
   const image = node.image;
   const hasImage = image?.status === "ready" && Boolean(image?.url);
   const imageSrc = useMemo(() => resolveImageSrc(image?.url), [image?.url]);
+  const [imageLoadState, setImageLoadState] = useState<"idle" | "loading" | "ready" | "error">(
+    hasImage ? "loading" : "idle",
+  );
+  const hasRenderableImage = hasImage && imageLoadState !== "error";
+  const isImageLoading = hasRenderableImage && imageLoadState === "loading";
 
   const nodeTitle = useMemo(() => resolveNodeTitle(node, fallbackTitle), [fallbackTitle, node]);
   const normalizedTitle = useMemo(() => normalizeSemantic(nodeTitle), [nodeTitle]);
@@ -368,7 +419,7 @@ function NodeCard({
 
   const shouldShowImageStatus = useMemo(() => {
     if (isOverflowSummary) return false;
-    if (isLeftStatement) return true;
+    if (isLeftStatement) return false;
     return node.isImageApplicable === true && Boolean(node.image?.status);
   }, [isLeftStatement, isOverflowSummary, node.image?.status, node.isImageApplicable]);
 
@@ -383,6 +434,14 @@ function NodeCard({
   useEffect(() => {
     return () => clearLongPress();
   }, [clearLongPress]);
+
+  useEffect(() => {
+    if (!hasImage) {
+      setImageLoadState("idle");
+      return;
+    }
+    setImageLoadState("loading");
+  }, [hasImage, imageSrc]);
 
   const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -504,24 +563,83 @@ function NodeCard({
 
       <div className="life-causal-card__node-title">{nodeTitle}</div>
 
-      {hasImage && (
-        <button
-          type="button"
-          className="life-causal-card__node-image-button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onPreviewImage?.(imageSrc, nodeTitle);
-          }}
-          data-no-toggle
-        >
-          <img
-            className="life-causal-card__node-image"
-            src={imageSrc}
-            alt={nodeTitle}
-            loading="lazy"
-          />
-          <span className="life-causal-card__node-image-zoom">🔍 Expand</span>
-        </button>
+      {isLeftStatement ? (
+        hasRenderableImage ? (
+          <button
+            type="button"
+            className={[
+              "life-causal-card__node-image-button",
+              isImageLoading ? "is-loading" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            onClick={(event) => {
+              event.stopPropagation();
+              onPreviewImage?.(imageSrc, nodeTitle);
+            }}
+            data-no-toggle
+          >
+            {isImageLoading && (
+              <span className="life-causal-card__node-image-loading" aria-hidden="true">
+                Loading image…
+              </span>
+            )}
+            <img
+              className="life-causal-card__node-image"
+              src={imageSrc}
+              alt={nodeTitle}
+              loading="lazy"
+              onLoad={() => setImageLoadState("ready")}
+              onError={() => setImageLoadState("error")}
+            />
+            <span className="life-causal-card__node-image-zoom">🔍 Expand</span>
+          </button>
+        ) : (
+          <div className="life-causal-card__node-image-placeholder" data-no-toggle>
+            <span className="life-causal-card__node-image-placeholder-icon" aria-hidden="true">
+              🖼️
+            </span>
+            <span className="life-causal-card__node-image-placeholder-title">
+              Add statement image
+            </span>
+            <span className="life-causal-card__node-image-placeholder-copy">
+              Keep this card visually anchored even while images are pending.
+            </span>
+            {onRequestNodeImage && (
+              <button
+                type="button"
+                className="life-causal-card__node-image-action"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRequestNodeImage(node.id);
+                }}
+                data-no-toggle
+              >
+                📷 Set image
+              </button>
+            )}
+          </div>
+        )
+      ) : (
+        hasImage && (
+          <button
+            type="button"
+            className="life-causal-card__node-image-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onPreviewImage?.(imageSrc, nodeTitle);
+            }}
+            data-no-toggle
+          >
+            <img
+              className="life-causal-card__node-image"
+              src={imageSrc}
+              alt={nodeTitle}
+              loading="lazy"
+            />
+            <span className="life-causal-card__node-image-zoom">🔍 Expand</span>
+          </button>
+        )
       )}
 
       {!isOverflowSummary && summaryLine && (
@@ -593,22 +711,6 @@ function NodeCard({
         </div>
       )}
 
-      {shouldShowImageStatus && !hasImage && !image?.status && isLeftStatement && onRequestNodeImage && (
-        <div className="life-causal-card__node-status">
-          No image yet
-          <button
-            type="button"
-            className="life-causal-card__node-image-action"
-            onClick={(event) => {
-              event.stopPropagation();
-              onRequestNodeImage(node.id);
-            }}
-            data-no-toggle
-          >
-            📷 Set image
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -763,7 +865,7 @@ export function CauseEffectCard({
   const boardResolvedNodeContent = useMemo(() => {
     const map = new Map<string, BoardResolvedNodeContent>();
     for (const node of boardRightNodes) {
-      const nodeTitle = resolveNodeTitle(node);
+      const nodeTitle = resolveBoardNodeTitle(node);
       const normalizedTitle = normalizeSemantic(nodeTitle);
       const summaryLine = resolveSummaryLine(node, normalizedTitle, { suppress: false });
       const bullets =
