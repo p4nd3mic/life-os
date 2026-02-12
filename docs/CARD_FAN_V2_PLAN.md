@@ -1,6 +1,7 @@
 # Card Fan Layout — V2 Implementation Plan
 
-**Status:** Ready for implementation
+**Status:** Superseded by Played Grid V1
+> Superseded note: Right-lane fan mode has been replaced by flat board mode. See `docs/CARD_PLAYED_GRID_V1_PLAN.md` for the current spec.
 **Inspiration:** Slay the Spire / Monster Train / Hearthstone / Magic: The Gathering
 **Toggle:** Coexists with Spine Flow (timeline) — user can switch between modes
 

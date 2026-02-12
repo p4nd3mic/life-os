@@ -115,9 +115,11 @@ describe("CardBubble", () => {
     expect(scoped.getAllByText(/^Episode 1$/i).length).toBeGreaterThanOrEqual(1);
     expect(scoped.getAllByText(/^Episode 2$/i).length).toBeGreaterThanOrEqual(1);
     expect(scoped.getAllByText(/^Episode 3$/i).length).toBeGreaterThanOrEqual(1);
-    expect(scoped.getByText(/More effects/i)).toBeTruthy();
     expect(scoped.getByText(/Episode 4/i)).toBeTruthy();
-    expect(scoped.queryByRole("button", { name: /show all outcomes/i })).toBeNull();
+    expect(scoped.queryByRole("button", { name: /switch to played cards view/i })).toBeNull();
+    expect(scoped.queryByRole("button", { name: /switch to timeline view/i })).toBeNull();
+    expect(container.querySelectorAll(".board-card").length).toBe(4);
+    expect(scoped.queryByText(/More effects/i)).toBeNull();
   });
 
   it("delivery sessions show latest effects in collapsed mode", () => {
@@ -169,7 +171,10 @@ describe("CardBubble", () => {
     expect(scoped.getAllByText(/Order #2/i).length).toBeGreaterThanOrEqual(1);
     expect(scoped.getAllByText(/Order #3/i).length).toBeGreaterThanOrEqual(1);
     expect(scoped.getAllByText(/Order #4/i).length).toBeGreaterThanOrEqual(1);
-    expect(scoped.getByText(/More outcomes/i)).toBeTruthy();
     expect(scoped.getByText(/Order #1/i)).toBeTruthy();
+    expect(scoped.queryByRole("button", { name: /switch to played cards view/i })).toBeNull();
+    expect(scoped.queryByRole("button", { name: /switch to timeline view/i })).toBeNull();
+    expect(container.querySelectorAll(".board-card").length).toBe(4);
+    expect(scoped.queryByText(/More outcomes/i)).toBeNull();
   });
 });

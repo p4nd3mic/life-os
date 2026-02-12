@@ -1,0 +1,42 @@
+.card-board-layout {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.card-board-layout__grid {
+  width: min(1360px, 100%);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+
+.card-board-layout--empty {
+  align-items: stretch;
+}
+
+.card-board-layout__empty {
+  margin: 0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  color: rgba(224, 221, 213, 0.72);
+  border: 1px dashed rgba(168, 162, 148, 0.46);
+  background: rgba(18, 16, 12, 0.42);
+}
+
+@media (max-width: 1100px) {
+  .card-board-layout__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+}
+
+@media (max-width: 720px) {
+  .card-board-layout__grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+}

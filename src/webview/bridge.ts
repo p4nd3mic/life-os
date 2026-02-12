@@ -1,5 +1,6 @@
-import type { StreamCard } from "../features/life-stream/types";
+import type { CausalCardContent, StreamCard } from "../features/life-stream/types";
 import type { WorkspaceInfo } from "../types";
+import cowboyBebopFeb2CausalRaw from "./fixtures/cowboy-bebop-feb2.causal.json";
 
 type BridgeRequest = {
   id: string;
@@ -69,32 +70,37 @@ function isDebugMode() {
   return Boolean(window.__WEBVIEW_DEBUG__ || import.meta.env.VITE_WEBVIEW_DEBUG);
 }
 
+const DEBUG_COWBOY_CAUSAL = cowboyBebopFeb2CausalRaw as unknown as CausalCardContent;
+const DEBUG_COWBOY_OCCURRED_AT = "2026-02-02T22:32:00.000Z";
+
 function buildDebugCards(): StreamCard[] {
   const now = new Date();
   const makeTime = (minutesAgo: number) =>
     new Date(now.getTime() - minutesAgo * 60_000).toISOString();
   return [
     {
-      id: "preview-episode-5",
-      occurredAt: makeTime(120),
-      createdAt: makeTime(120),
-      updatedAt: makeTime(118),
-      version: 3,
+      id: "2026-02-02-2232-facbfd21-149a-41ca-ada5-c288a7ffabf5",
+      occurredAt: DEBUG_COWBOY_OCCURRED_AT,
+      createdAt: DEBUG_COWBOY_OCCURRED_AT,
+      updatedAt: "2026-02-06T00:50:33.000Z",
+      version: 6,
       cardType: "thought",
-      domain: "general",
-      emoji: "📝",
+      domain: "media",
+      emoji: "🎬",
+      layoutMode: "cause_effect",
+      causal: DEBUG_COWBOY_CAUSAL,
       state: "complete",
-      title: "Episode 5 is the real start",
+      title: "Cowboy Bebop Ep. 5 is the emotional pilot",
       summary:
-        "Ep 5 reframes Spike’s detachment and turns Vicious into a true gravitational pull.",
+        "Real February 2 data card used for fan/timeline visual validation in debug mode.",
       originalInput:
-        "I think episode 5 of Cowboy Bebop is my favorite — it feels like the real show starts here.",
+        "So, I think episode 5 of Cowboy Bebop is my favorite. It should almost be the first episode.",
       expanded: {
         sections: [
           {
             title: "Codex response",
             body:
-              "Episode 5 is where the series flips from vibe to destiny — Spike stops drifting and starts spiraling toward Vicious.",
+              "Episode 5 shifts the show from stylish episodic energy to tragedy-forward stakes. Vicious and Spike’s history become active plot.",
           },
         ],
         actions: [],
@@ -157,6 +163,19 @@ async function debugInvoke(method: string, payload?: Record<string, unknown> | n
         "Life Stream booted in debug mode.",
         `workspace=${(payload?.workspaceId as string | undefined) ?? "unknown"}`,
       ];
+    case "life_stream_auth_health":
+      return {
+        state: "healthy",
+        message: "Debug mode bridge is active.",
+        checkedAt: new Date().toISOString(),
+      };
+    case "life_stream_task_dock_load":
+      return {
+        version: 1,
+        items: [],
+      };
+    case "life_stream_task_dock_save":
+      return null;
     case "life_stream_submit":
     case "life_stream_cancel":
     case "life_stream_retry":
