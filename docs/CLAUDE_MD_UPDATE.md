@@ -6,18 +6,6 @@ This file is intended to be pasted into `~/.claude/CLAUDE.md` as an update for t
 
 ---
 
-## Shared CODEX_HOME policy (2026-02)
-
-Use this policy text in `~/.claude/CLAUDE.md`:
-
-- **Shared CODEX_HOME (source of truth):** `/Users/jmwillis/.codex`
-- **Legacy backup only (retired):** `/Users/jmwillis/.codex-lifeos`
-- Life workspace override should point to shared root:
-  - `/Users/jmwillis/Library/Application Support/com.dimillian.codexmonitor/workspaces.json`
-- Automations are intentionally paused while single-root behavior is stabilized.
-
----
-
 ## CodexMonitor-lifeos (Life OS desktop app)
 
 **Root:** `/Volumes/YouTube 4TB/CodexMonitor-lifeos`  

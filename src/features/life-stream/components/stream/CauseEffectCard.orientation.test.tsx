@@ -19,13 +19,10 @@ function makeCausalPayload(): CausalCardContent {
         id: "right-1",
         text: "Why 1",
         role: "response",
-        headline:
-          'The episode is correctly identified as "Ballad of Fallen Angels," which anchors the discussion precisely.',
-        summaryLine: "Name accuracy matters because this episode is a major arc landmark.",
+        headline: "Faster lock-in",
+        summaryLine: "The structure helps the viewer lock into stakes quickly.",
         bullets: ["Opens character history early", "Frames immediate conflict"],
         rank: 2,
-        isImageApplicable: true,
-        image: { status: "missing" },
       },
       {
         id: "right-2",
@@ -35,11 +32,6 @@ function makeCausalPayload(): CausalCardContent {
         summaryLine: "Tone contrast deepens the emotional impact.",
         bullets: ["Style shifts from cool to personal", "Makes the turn memorable"],
         rank: 1,
-        isImageApplicable: true,
-        image: {
-          status: "ready",
-          url: "https://example.com/bebop.jpg",
-        },
       },
       {
         id: "right-3",
@@ -116,7 +108,7 @@ describe("CauseEffectCard vertical orientation", () => {
     expect(ids).toEqual(["right-2", "right-1", "right-3", "right-4"]);
   });
 
-  it("keeps merged lead line and bullets on cards without detail panel", () => {
+  it("keeps all core content on cards without detail panel", () => {
     const { container } = render(
       <CauseEffectCard
         cardId="card-content"
@@ -125,36 +117,13 @@ describe("CauseEffectCard vertical orientation", () => {
         causal={makeCausalPayload()}
         layoutOrientation="vertical"
         onRestructure={() => {}}
-        onRequestNodeImage={() => {}}
       />,
     );
 
     expect(container.querySelector(".fan-detail-panel")).toBeNull();
-    expect(container.querySelector(".board-card__title")).toBeNull();
-    expect(container.querySelector(".board-card__summary")).toBeNull();
-    expect(screen.getByText(/Name accuracy matters/i)).toBeTruthy();
-    expect(screen.getByText(/Ballad of Fallen Angels/i)).toBeTruthy();
+    expect(container.querySelector(".board-card__title")?.textContent).toContain("Mood boost");
+    expect(container.querySelector(".board-card__summary")?.textContent).toContain("Tone contrast");
     expect(container.querySelectorAll(".board-card__bullets li").length).toBeGreaterThan(0);
-  });
-
-  it("renders art slots for all board cards and shows fetch CTA when image is missing", () => {
-    const { container } = render(
-      <CauseEffectCard
-        cardId="card-art-slots"
-        cardType="thought"
-        cardTitle="Art slots"
-        causal={makeCausalPayload()}
-        layoutOrientation="vertical"
-        onRestructure={() => {}}
-        onRequestNodeImage={() => {}}
-      />,
-    );
-
-    expect(container.querySelectorAll(".board-card__art-shell").length).toBe(4);
-    expect(container.querySelectorAll(".board-card__art-image").length).toBeGreaterThan(0);
-    expect(
-      screen.getAllByRole("button", { name: /fetch image/i }).length,
-    ).toBeGreaterThan(0);
   });
 
   it("selects a board card without opening extra detail UI", () => {

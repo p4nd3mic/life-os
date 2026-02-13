@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +28,7 @@ use super::image_manual::{
     promote_entity_from_source_path, resolve_entity_for_card, sync_entity_file_image,
     EntityFileSyncOptions, ResolvedEntity,
 };
+use super::images::ImageService;
 use super::mcp_bridge::LifeMcpBridge;
 use super::obsidian::{
     DayThreadRuntimeState, ObsidianIO, SemanticRewriteLogAttempt, SemanticRewriteLogEntry,
@@ -1666,8 +1668,33 @@ async fn process_card(
         }
     }
 
-    // Image lookup/fetching intentionally disabled while rebuilding image pipeline.
-    let _ = (obsidian_root, tmdb_api_key, enriched.image_lookup);
+    if let Some(lookup) = enriched.image_lookup {
+        if let Some(root) = obsidian_root {
+            let cards = Arc::clone(cards);
+            let emitter = emitter.clone();
+            let event_sink = event_sink.clone();
+            let card_id = card_id.to_string();
+            let tmdb_key = tmdb_api_key.map(|value| value.to_string());
+            let root = PathBuf::from(root);
+            tokio::spawn(async move {
+                let image_service = ImageService::new(root, tmdb_key);
+                let image = image_service
+                    .fetch_image(card_type_label(&lookup.card_type), &lookup.entity_name)
+                    .await;
+                let _ = emit_patch(
+                    &card_id,
+                    StreamCardPatch {
+                        image: Some(image),
+                        ..Default::default()
+                    },
+                    &cards,
+                    &emitter,
+                    &event_sink,
+                )
+                .await;
+            });
+        }
+    }
 
     Ok(())
 }
@@ -4637,10 +4664,20 @@ async fn handle_media(
             .collect::<Vec<_>>()
     });
 
-    // Image lookup/fetching is intentionally disabled while we rebuild the pipeline from scratch.
-    let _ = title;
-    let image_lookup = None;
-    let image = None;
+    let image_lookup = if title.is_empty() {
+        None
+    } else {
+        Some(ImageLookup {
+            card_type: CardType::MediaAdd,
+            entity_name: title.clone(),
+        })
+    };
+
+    let image = image_lookup.as_ref().map(|_| CardImage {
+        url: None,
+        status: ImageStatus::Loading,
+        source: None,
+    });
 
     Ok(EnrichedData {
         title: processed.title,

@@ -6,18 +6,16 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import type { CausalNode, ImageStatus } from "../../types";
+import type { CausalNode } from "../../types";
 import { nodeAnchorId } from "../../utils/anchors";
 import "./BoardCard.css";
 
 export type BoardCardColorVariant = "gold" | "green" | "blue";
 
 export type BoardCardResolvedNode = {
-  leadLine: string;
+  title: string;
+  summaryLine: string;
   bullets: string[];
-  imageSrc?: string;
-  imageStatus: ImageStatus;
-  ariaTitle: string;
 };
 
 type BoardCardProps = {
@@ -29,7 +27,6 @@ type BoardCardProps = {
   setRef: (nodeId: string, element: HTMLDivElement | null) => void;
   onSelect: (nodeId: string, options?: { toggle?: boolean }) => void;
   onOpenContextMenu: (nodeId: string, point: { x: number; y: number }) => void;
-  onRequestImage?: (nodeId: string) => void;
 };
 
 export function BoardCard({
@@ -41,19 +38,10 @@ export function BoardCard({
   setRef,
   onSelect,
   onOpenContextMenu,
-  onRequestImage,
 }: BoardCardProps) {
   const longPressRef = useRef<number | null>(null);
   const didLongPressRef = useRef(false);
   const longPressPointRef = useRef<{ x: number; y: number } | null>(null);
-  const hasImage = resolved.imageStatus === "ready" && Boolean(resolved.imageSrc);
-  const ariaTitle = resolved.ariaTitle || resolved.leadLine || `Card ${rank}`;
-  const imageStatusLabel =
-    resolved.imageStatus === "loading"
-      ? "Image is loading"
-      : resolved.imageStatus === "upload_prompt"
-        ? "Image slot ready"
-        : "Image unavailable";
 
   const clearLongPress = useCallback(() => {
     if (longPressRef.current !== null) {
@@ -143,7 +131,7 @@ export function BoardCard({
       data-node-rank={rank}
       tabIndex={0}
       role="button"
-      aria-label={`Card ${rank}: ${ariaTitle}`}
+      aria-label={`Card ${rank}: ${resolved.title}`}
       className={[
         "board-card",
         `board-card--${colorVariant}`,
@@ -163,45 +151,11 @@ export function BoardCard({
         {rank}
       </div>
 
-      <div className="board-card__art-shell" data-image-state={resolved.imageStatus}>
-        {hasImage ? (
-          <img
-            src={resolved.imageSrc}
-            alt={ariaTitle}
-            className="board-card__art-image"
-            loading="lazy"
-          />
-        ) : (
-          <div className="board-card__art-placeholder" data-no-toggle>
-            <span className="board-card__art-placeholder-icon" aria-hidden="true">
-              🖼️
-            </span>
-            {onRequestImage ? (
-              <>
-                <span className="board-card__art-placeholder-title">{imageStatusLabel}</span>
-                <span className="board-card__art-placeholder-copy">
-                  Add card art to reinforce context at a glance.
-                </span>
-                <button
-                  type="button"
-                  className="board-card__art-action"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onRequestImage(node.id);
-                  }}
-                  data-no-toggle
-                >
-                  📷 Fetch image
-                </button>
-              </>
-            ) : null}
-          </div>
-        )}
-      </div>
+      <h3 className="board-card__title">{resolved.title}</h3>
 
-      {resolved.leadLine && <h3 className="board-card__lead">{resolved.leadLine}</h3>}
-
-      <div className="board-card__divider" aria-hidden="true" />
+      {resolved.summaryLine && (
+        <p className="board-card__summary">{resolved.summaryLine}</p>
+      )}
 
       {resolved.bullets.length > 0 && (
         <ol className="board-card__bullets" data-no-toggle>

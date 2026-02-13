@@ -22,35 +22,12 @@ export function LifeStreamHeaderControls() {
     resetDayThreadAndRebuildForCurrentDate,
     authHealthStatus,
     checkAuthHealth,
-    codexUsageGuard,
-    resetCodexUsageGuardBaseline,
+    imageAutoFetchStatus,
+    autoFetchImagesForCurrentDate,
     activeFilters,
     toggleFilter,
     clearFilters,
   } = context;
-
-  const formatPercent = (value?: number) =>
-    typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)}%` : "—";
-
-  const formatResetLabel = (value?: number | null) => {
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-      return "reset —";
-    }
-    const msUntilReset = Math.max(0, value - Date.now());
-    const minutes = Math.floor(msUntilReset / 60_000);
-    const hours = Math.floor(minutes / 60);
-    if (hours > 0) {
-      return `reset in ${hours}h ${minutes % 60}m`;
-    }
-    return `reset in ${minutes}m`;
-  };
-
-  const codexUsageTrendClass =
-    codexUsageGuard.trend === "surging"
-      ? "is-surging"
-      : codexUsageGuard.trend === "active"
-        ? "is-active"
-        : "is-idle";
 
   return (
     <div className="life-stream-header-controls" data-tauri-drag-region="false">
@@ -114,6 +91,28 @@ export function LifeStreamHeaderControls() {
                   ? "🩺 Auth: login needed"
                   : "🩺 Auth check"}
           </button>
+          <button
+            type="button"
+            className="life-segment-button life-stream-semantic-actions__button"
+            onClick={() => {
+              void autoFetchImagesForCurrentDate("review_first");
+            }}
+            disabled={imageAutoFetchStatus.state === "running"}
+          >
+            {imageAutoFetchStatus.state === "running"
+              ? "🖼️ Fetching..."
+              : "🖼️ Fetch images (ask)"}
+          </button>
+          <button
+            type="button"
+            className="life-segment-button life-stream-semantic-actions__button"
+            onClick={() => {
+              void autoFetchImagesForCurrentDate("auto_apply");
+            }}
+            disabled={imageAutoFetchStatus.state === "running"}
+          >
+            ⚡ Auto-apply images
+          </button>
         </div>
         {semanticRegenerationStatus.message && (
           <span
@@ -148,76 +147,16 @@ export function LifeStreamHeaderControls() {
             {authHealthStatus.message}
           </span>
         )}
-        <div
-          className={`life-stream-semantic-actions__usage-panel ${codexUsageTrendClass}`}
-          role="status"
-          aria-live="polite"
-        >
-          <div className="life-stream-semantic-actions__usage-panel-header">
-            <span>🛡️ Codex usage guard</span>
-            <span className="life-stream-semantic-actions__usage-panel-meta">
-              1m {codexUsageGuard.turnsLastMinute} turns ·{" "}
-              {Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
-                codexUsageGuard.tokensLastMinute,
-              )}{" "}
-              tok
-            </span>
-          </div>
-          <div className="life-stream-semantic-actions__usage-panel-grid">
-            <div className="life-stream-semantic-actions__usage-panel-cell">
-              <span className="life-stream-semantic-actions__usage-panel-label">5h window</span>
-              <span className="life-stream-semantic-actions__usage-panel-value">
-                used {formatPercent(codexUsageGuard.primaryUsedPercent)} · left{" "}
-                {formatPercent(codexUsageGuard.primaryRemainingPercent)}
-              </span>
-              <span className="life-stream-semantic-actions__usage-panel-subtle">
-                {formatResetLabel(codexUsageGuard.primaryResetsAt)}
-              </span>
-            </div>
-            <div className="life-stream-semantic-actions__usage-panel-cell">
-              <span className="life-stream-semantic-actions__usage-panel-label">Weekly</span>
-              <span className="life-stream-semantic-actions__usage-panel-value">
-                used {formatPercent(codexUsageGuard.secondaryUsedPercent)} · left{" "}
-                {formatPercent(codexUsageGuard.secondaryRemainingPercent)}
-              </span>
-              <span className="life-stream-semantic-actions__usage-panel-subtle">
-                {formatResetLabel(codexUsageGuard.secondaryResetsAt)}
-              </span>
-            </div>
-            <div className="life-stream-semantic-actions__usage-panel-cell">
-              <span className="life-stream-semantic-actions__usage-panel-label">Live load</span>
-              <span className="life-stream-semantic-actions__usage-panel-value">
-                {codexUsageGuard.inFlightTurns} in-flight · 5m{" "}
-                {codexUsageGuard.turnsLastFiveMinutes} turns ·{" "}
-                {Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
-                  codexUsageGuard.tokensLastFiveMinutes,
-                )}{" "}
-                tok
-              </span>
-              <span className="life-stream-semantic-actions__usage-panel-subtle">
-                {codexUsageGuard.lastTokenAt
-                  ? `last token event ${new Date(codexUsageGuard.lastTokenAt).toLocaleTimeString([], {
-                      hour: "numeric",
-                      minute: "2-digit",
-                      second: "2-digit",
-                    })}`
-                  : "no token events yet in this session"}
-              </span>
-            </div>
-          </div>
-          <div className="life-stream-semantic-actions__usage-panel-footer">
-            <span className="life-stream-semantic-actions__usage-panel-alert">
-              {codexUsageGuard.message}
-            </span>
-            <button
-              type="button"
-              className="life-segment-button life-stream-semantic-actions__button"
-              onClick={resetCodexUsageGuardBaseline}
-            >
-              ♻️ Reset baseline
-            </button>
-          </div>
-        </div>
+        {imageAutoFetchStatus.message && (
+          <span
+            className={`life-stream-semantic-actions__status life-stream-semantic-actions__status--image${
+              imageAutoFetchStatus.state === "error" ? " is-error" : ""
+            }`}
+            role="status"
+          >
+            {imageAutoFetchStatus.message}
+          </span>
+        )}
       </div>
       <EmojiFilters
         activeFilters={activeFilters}

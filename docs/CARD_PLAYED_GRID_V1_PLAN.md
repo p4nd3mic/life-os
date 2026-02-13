@@ -3,7 +3,6 @@
 **Status:** Implemented (2026-02)
 **Replaces:** Fan layout mode in vertical right lane
 **Keeps:** Timeline mode + improved statement card stage styling
-**Superseded by:** `docs/CARD_PLAYED_GRID_V2_IMAGE_LEAD_PLAN.md` (summary-first lead + top art slot)
 
 ---
 
