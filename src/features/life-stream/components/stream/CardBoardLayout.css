@@ -6,11 +6,12 @@
 }
 
 .card-board-layout__grid {
-  width: min(1400px, 100%);
+  width: min(1420px, 100%);
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 15px;
+  gap: 16px;
   align-items: stretch;
+  grid-auto-rows: 1fr;
 }
 
 .card-board-layout--empty {

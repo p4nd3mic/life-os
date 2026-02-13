@@ -17,16 +17,13 @@ type CardBoardLayoutProps = {
   setNodeRef: (nodeId: string, element: HTMLDivElement | null) => void;
   onSelectNode: (nodeId: string | null, options?: { toggle?: boolean }) => void;
   onOpenContextMenu: (nodeId: string, point: { x: number; y: number }) => void;
+  onRequestNodeImage?: (nodeId: string) => void;
 };
 
 const COLOR_CYCLE: BoardCardColorVariant[] = ["gold", "green", "blue"];
 
 function resolveColorVariant(index: number): BoardCardColorVariant {
   return COLOR_CYCLE[index % COLOR_CYCLE.length] ?? "gold";
-}
-
-function fallbackSummary(node: CausalNode): string {
-  return node.summaryLine?.trim() || "";
 }
 
 export function CardBoardLayout({
@@ -37,14 +34,17 @@ export function CardBoardLayout({
   setNodeRef,
   onSelectNode,
   onOpenContextMenu,
+  onRequestNodeImage,
 }: CardBoardLayoutProps) {
   const rows = useMemo(() => {
     return rightNodes.map((node, index) => {
       const rank = node.rank ?? index + 1;
       const resolved = resolvedNodeContent.get(node.id) ?? {
-        title: node.headline?.trim() || node.title?.trim() || node.text.trim(),
-        summaryLine: fallbackSummary(node),
+        leadLine: node.summaryLine?.trim() || node.headline?.trim() || node.title?.trim() || node.text.trim(),
         bullets: node.bullets ?? [],
+        imageSrc: node.image?.status === "ready" ? node.image?.url : undefined,
+        imageStatus: node.image?.status ?? "missing",
+        ariaTitle: node.headline?.trim() || node.title?.trim() || node.text.trim(),
       };
 
       return {
@@ -78,6 +78,7 @@ export function CardBoardLayout({
             setRef={setNodeRef}
             onSelect={onSelectNode}
             onOpenContextMenu={onOpenContextMenu}
+            onRequestImage={onRequestNodeImage}
           />
         ))}
       </div>

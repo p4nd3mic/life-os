@@ -103,6 +103,28 @@ function normalizeSemantic(value: string): string {
     .trim();
 }
 
+function normalizeNumberSpacing(value: string): string {
+  return value
+    .replace(/\b([A-Za-z]{3,})(\d+)\b/g, (match, letters: string, digits: string) => {
+      if (!/[a-z]/.test(letters)) {
+        return match;
+      }
+      return `${letters} ${digits}`;
+    })
+    .replace(/\b(\d{1,2}),(\d{1,2})(\b|(?=[^\d]))/g, "$1, $2")
+    .replace(/\b(\d+)([A-Za-z]{3,})\b/g, (match, digits: string, letters: string) => {
+      if (/^(st|nd|rd|th)$/i.test(letters)) {
+        return match;
+      }
+      if (!/[a-z]/.test(letters)) {
+        return match;
+      }
+      return `${digits} ${letters}`;
+    })
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function isGenericNodeTitle(value?: string | null) {
   if (!value) return false;
   const normalized = normalizeSemantic(value);
@@ -246,6 +268,122 @@ function resolveBoardNodeTitle(node: CausalNode, fallbackTitle?: string): string
   return fallbackTitleText.length > 170
     ? `${fallbackTitleText.slice(0, 167).trimEnd()}…`
     : fallbackTitleText;
+}
+
+function clampAtWordBoundary(value: string, maxChars = 180): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  const slice = trimmed.slice(0, maxChars + 1);
+  const lastBoundary = Math.max(slice.lastIndexOf(" "), slice.lastIndexOf(","), slice.lastIndexOf(";"));
+  if (lastBoundary >= Math.floor(maxChars * 0.62)) {
+    return `${slice.slice(0, lastBoundary).trimEnd()}…`;
+  }
+  return `${trimmed.slice(0, maxChars).trimEnd()}…`;
+}
+
+function dedupeAnchors(anchors: string[]): string[] {
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const anchor of anchors) {
+    const cleaned = anchor
+      .replace(/\s+/g, " ")
+      .replace(/[.,;:!?]+$/g, "")
+      .trim();
+    if (!cleaned) continue;
+    const key = normalizeSemantic(cleaned);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    values.push(cleaned);
+  }
+  return values;
+}
+
+function extractBoardTitleAnchors(value: string): string[] {
+  if (!value) {
+    return [];
+  }
+
+  const quoted = Array.from(value.matchAll(/[“"]([^”"]{3,88})[”"]/g)).map(
+    (match) => match[1]?.trim() ?? "",
+  );
+  const episodic = Array.from(
+    value.matchAll(/\b(?:episode|ep)\s*\.?\s*\d{1,2}\b/gi),
+  ).map((match) => match[0]?.replace(/\s+/g, " ").trim() ?? "");
+  const properNouns = Array.from(
+    value.matchAll(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}\b/g),
+  )
+    .map((match) => match[0]?.trim() ?? "")
+    .filter((candidate) => {
+      const firstWord = candidate.split(" ")[0]?.toLowerCase();
+      return !["the", "a", "an", "this", "that"].includes(firstWord);
+    });
+
+  return dedupeAnchors([...quoted, ...episodic, ...properNouns]);
+}
+
+function isNearDuplicateLine(a: string, b: string): boolean {
+  const left = normalizeSemantic(a);
+  const right = normalizeSemantic(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const minLength = Math.min(left.length, right.length);
+  const maxLength = Math.max(left.length, right.length);
+  if (minLength === 0) return false;
+  if (maxLength - minLength > 28) return false;
+  return left.startsWith(right) || right.startsWith(left);
+}
+
+function resolveBoardLeadLine(node: CausalNode, fallbackTitle?: string): string {
+  const resolvedTitle = normalizeNumberSpacing(resolveBoardNodeTitle(node, fallbackTitle));
+  const summaryLine = normalizeNumberSpacing(node.summaryLine?.trim() ?? "");
+  const hasUsableSummary =
+    Boolean(summaryLine) && !isGenericNodeTitle(summaryLine) && summaryLine.length >= 12;
+
+  const base = hasUsableSummary ? summaryLine : resolvedTitle;
+  if (!base) {
+    return resolvedTitle || "Details";
+  }
+
+  if (!hasUsableSummary) {
+    return clampAtWordBoundary(base, 180);
+  }
+
+  const normalizedBase = normalizeSemantic(base);
+  const anchors = extractBoardTitleAnchors(resolvedTitle);
+  const missingAnchor = anchors.find((anchor) => {
+    const normalizedAnchor = normalizeSemantic(anchor);
+    if (!normalizedAnchor) return false;
+    return !normalizedBase.includes(normalizedAnchor);
+  });
+
+  if (!missingAnchor) {
+    return clampAtWordBoundary(base, 180);
+  }
+
+  const merged = `${base.replace(/\s*[.!?]\s*$/, "")} — anchored to “${missingAnchor}.”`;
+  return clampAtWordBoundary(merged, 180);
+}
+
+function dedupeLeadFromBullets(leadLine: string, bullets: string[]): string[] {
+  if (!leadLine || bullets.length === 0) {
+    return bullets;
+  }
+
+  const [first, ...rest] = bullets;
+  if (!first) {
+    return bullets;
+  }
+
+  if (isNearDuplicateLine(leadLine, first)) {
+    return rest;
+  }
+
+  return bullets;
 }
 
 function resolveSummaryLine(
@@ -393,23 +531,31 @@ function NodeCard({
   const hasRenderableImage = hasImage && imageLoadState !== "error";
   const isImageLoading = hasRenderableImage && imageLoadState === "loading";
 
-  const nodeTitle = useMemo(() => resolveNodeTitle(node, fallbackTitle), [fallbackTitle, node]);
+  const nodeTitle = useMemo(
+    () => normalizeNumberSpacing(resolveNodeTitle(node, fallbackTitle)),
+    [fallbackTitle, node],
+  );
   const normalizedTitle = useMemo(() => normalizeSemantic(nodeTitle), [nodeTitle]);
 
   const summaryLine = useMemo(
     () =>
-      resolveSummaryLine(node, normalizedTitle, {
-        suppress: isLeftStatement,
-      }),
+      normalizeNumberSpacing(
+        resolveSummaryLine(node, normalizedTitle, {
+          suppress: isLeftStatement,
+        }),
+      ),
     [isLeftStatement, node, normalizedTitle],
   );
 
-  const overflowLines = useMemo(() => resolveOverflowLines(node), [node]);
+  const overflowLines = useMemo(
+    () => resolveOverflowLines(node).map((line) => normalizeNumberSpacing(line)),
+    [node],
+  );
   const rightDetailBullets = useMemo(
     () =>
       isLeftStatement || isOverflowSummary
         ? []
-        : resolveRightNodeBullets(node, normalizedTitle),
+        : resolveRightNodeBullets(node, normalizedTitle).map((line) => normalizeNumberSpacing(line)),
     [isLeftStatement, isOverflowSummary, node, normalizedTitle],
   );
   const overflowStart = useMemo(
@@ -857,7 +1003,10 @@ export function CauseEffectCard({
       if (node.groupType === "overflow_summary") continue;
       const title = resolveNodeTitle(node);
       const nTitle = normalizeSemantic(title);
-      map.set(node.id, resolveRightNodeBullets(node, nTitle));
+      map.set(
+        node.id,
+        resolveRightNodeBullets(node, nTitle).map((line) => normalizeNumberSpacing(line)),
+      );
     }
     return map;
   }, [rankedRightNodes]);
@@ -865,17 +1014,25 @@ export function CauseEffectCard({
   const boardResolvedNodeContent = useMemo(() => {
     const map = new Map<string, BoardResolvedNodeContent>();
     for (const node of boardRightNodes) {
-      const nodeTitle = resolveBoardNodeTitle(node);
-      const normalizedTitle = normalizeSemantic(nodeTitle);
-      const summaryLine = resolveSummaryLine(node, normalizedTitle, { suppress: false });
-      const bullets =
+      const ariaTitle = normalizeNumberSpacing(resolveBoardNodeTitle(node));
+      const leadLine = normalizeNumberSpacing(resolveBoardLeadLine(node, ariaTitle));
+      const normalizedLead = normalizeSemantic(leadLine);
+      const bulletsRaw =
         node.groupType === "overflow_summary"
-          ? resolveOverflowLines(node)
-          : rightNodeBulletsMap.get(node.id) ?? [];
+          ? resolveOverflowLines(node).map((line) => normalizeNumberSpacing(line))
+          : (rightNodeBulletsMap.get(node.id) ?? []).map((line) => normalizeNumberSpacing(line));
+      const bullets = dedupeLeadFromBullets(leadLine, bulletsRaw).filter(
+        (line) => normalizeSemantic(line) !== normalizedLead,
+      );
+      const hasReadyImage = node.image?.status === "ready" && Boolean(node.image?.url);
+      const imageStatus = hasReadyImage ? "ready" : (node.image?.status ?? "missing");
+      const imageSrc = hasReadyImage ? resolveImageSrc(node.image?.url) : undefined;
       map.set(node.id, {
-        title: nodeTitle,
-        summaryLine,
+        leadLine,
         bullets,
+        imageSrc,
+        imageStatus,
+        ariaTitle,
       });
     }
     return map;
@@ -1559,6 +1716,7 @@ export function CauseEffectCard({
               setNodeRef={registerRightRef}
               onSelectNode={handleSelectNode}
               onOpenContextMenu={handleOpenContextMenu}
+              onRequestNodeImage={onRequestNodeImage}
             />
           ) : (
             visibleRightNodes.map((node, index) => (
