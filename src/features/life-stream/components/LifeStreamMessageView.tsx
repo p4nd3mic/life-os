@@ -8,11 +8,6 @@ import { cardAnchorId, nodeAnchorId } from "../utils/anchors";
 import { formatPacificTimeLabel, getPacificDateString } from "../../../utils/pacificTime";
 import "./LifeStreamMessageView.css";
 
-type ReviewCandidatesEventDetail = {
-  cardId: string;
-  nodeId?: string;
-};
-
 function parseOccurredAt(value: string): number | null {
   const date = new Date(value);
   if (!Number.isNaN(date.getTime())) {
@@ -212,26 +207,6 @@ export function LifeStreamMessageView() {
     }, 1600);
   };
 
-  const reviewCandidates = (item: TaskDockItem) => {
-    jumpToSource(item);
-    if (!item.sourceCardId) {
-      return;
-    }
-
-    window.setTimeout(() => {
-      const detail: ReviewCandidatesEventDetail = {
-        cardId: item.sourceCardId as string,
-        nodeId: item.sourceNodeId ?? undefined,
-      };
-      window.dispatchEvent(
-        new CustomEvent<ReviewCandidatesEventDetail>(
-          "life-stream-review-image-candidates",
-          { detail },
-        ),
-      );
-    }, 220);
-  };
-
   return (
     <div className={containerClassName}>
       {loadError && (
@@ -274,10 +249,7 @@ export function LifeStreamMessageView() {
         </div>
       )}
       {!isLoading && (
-        <StickyTaskDock
-          onJumpToSource={jumpToSource}
-          onReviewCandidates={reviewCandidates}
-        />
+        <StickyTaskDock onJumpToSource={jumpToSource} />
       )}
     </div>
   );

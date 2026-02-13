@@ -53,7 +53,7 @@ export function BoardCard({
       ? "Image is loading"
       : resolved.imageStatus === "upload_prompt"
         ? "Image slot ready"
-        : "No image yet";
+        : "Image unavailable";
 
   const clearLongPress = useCallback(() => {
     if (longPressRef.current !== null) {
@@ -176,23 +176,25 @@ export function BoardCard({
             <span className="board-card__art-placeholder-icon" aria-hidden="true">
               🖼️
             </span>
-            <span className="board-card__art-placeholder-title">{imageStatusLabel}</span>
-            <span className="board-card__art-placeholder-copy">
-              Add card art to reinforce context at a glance.
-            </span>
-            {onRequestImage && (
-              <button
-                type="button"
-                className="board-card__art-action"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onRequestImage(node.id);
-                }}
-                data-no-toggle
-              >
-                📷 Fetch image
-              </button>
-            )}
+            {onRequestImage ? (
+              <>
+                <span className="board-card__art-placeholder-title">{imageStatusLabel}</span>
+                <span className="board-card__art-placeholder-copy">
+                  Add card art to reinforce context at a glance.
+                </span>
+                <button
+                  type="button"
+                  className="board-card__art-action"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRequestImage(node.id);
+                  }}
+                  data-no-toggle
+                >
+                  📷 Fetch image
+                </button>
+              </>
+            ) : null}
           </div>
         )}
       </div>

@@ -24,6 +24,8 @@ type ReviewCandidatesEventDetail = {
   nodeId?: string;
 };
 
+const IMAGE_TOOLS_ENABLED = false;
+
 type CardBubbleProps = {
   card: StreamCard;
   onCancel: (cardId: string) => void;
@@ -279,6 +281,9 @@ export function CardBubble({
 
   const openImageAttachSheet = useCallback(
     async (nodeId: string | null, contextHint?: string | null) => {
+      if (!IMAGE_TOOLS_ENABLED) {
+        return;
+      }
       if (!context?.getImageCandidates) {
         setIsImageAttachOpen(true);
         setImageAttachTargetNodeId(nodeId);
@@ -311,6 +316,9 @@ export function CardBubble({
   );
 
   useEffect(() => {
+    if (!IMAGE_TOOLS_ENABLED) {
+      return;
+    }
     const handler = (event: Event) => {
       const customEvent = event as CustomEvent<ReviewCandidatesEventDetail>;
       const detail = customEvent.detail;
@@ -342,6 +350,9 @@ export function CardBubble({
       candidate: ImageCandidate,
       selectionOptions?: ImageAttachSelectionOptions,
     ) => {
+      if (!IMAGE_TOOLS_ENABLED) {
+        return;
+      }
       if (!context?.attachImage) {
         setImageAttachError("Attach image action unavailable.");
         return;
@@ -373,6 +384,9 @@ export function CardBubble({
   );
 
   const browseForImage = useCallback(async () => {
+    if (!IMAGE_TOOLS_ENABLED) {
+      return;
+    }
     const { pickImageFiles } = await import("../../../../services/tauri");
     const selection = await pickImageFiles();
     const sourcePath = selection[0];
@@ -404,12 +418,16 @@ export function CardBubble({
             setShowGraphTranscript((prev) => !prev);
           }}
           onRestructure={(action, options) => onRestructure(card.id, action, options)}
-          onRequestNodeImage={(nodeId) => {
-            const node = [...causalCard.leftNodes, ...causalCard.rightNodes].find(
-              (item) => item.id === nodeId,
-            );
-            void openImageAttachSheet(nodeId, node?.text ?? card.originalInput ?? null);
-          }}
+          onRequestNodeImage={
+            IMAGE_TOOLS_ENABLED
+              ? (nodeId) => {
+                  const node = [...causalCard.leftNodes, ...causalCard.rightNodes].find(
+                    (item) => item.id === nodeId,
+                  );
+                  void openImageAttachSheet(nodeId, node?.text ?? card.originalInput ?? null);
+                }
+              : undefined
+          }
         />
 
         {showGraphTranscript && (
@@ -490,20 +508,22 @@ export function CardBubble({
 
         <ProcessingIndicator card={card} />
 
-        <ImageAttachSheet
-          open={isImageAttachOpen}
-          loading={imageAttachLoading}
-          error={imageAttachError}
-          response={imageAttachResponse}
-          contextHint={imageAttachContextHint}
-          onClose={closeImageAttachSheet}
-          onBrowse={() => {
-            void browseForImage();
-          }}
-          onSelectCandidate={(candidate, options) => {
-            void applyCandidateImage(candidate, options);
-          }}
-        />
+        {IMAGE_TOOLS_ENABLED && (
+          <ImageAttachSheet
+            open={isImageAttachOpen}
+            loading={imageAttachLoading}
+            error={imageAttachError}
+            response={imageAttachResponse}
+            contextHint={imageAttachContextHint}
+            onClose={closeImageAttachSheet}
+            onBrowse={() => {
+              void browseForImage();
+            }}
+            onSelectCandidate={(candidate, options) => {
+              void applyCandidateImage(candidate, options);
+            }}
+          />
+        )}
       </section>
     );
   }
@@ -578,27 +598,33 @@ export function CardBubble({
             title={card.title}
             emoji={card.emoji}
             size={isExpanded ? "expanded" : "compact"}
-            onRequestUpload={() => {
-              void openImageAttachSheet(null, card.originalInput ?? null);
-            }}
+            onRequestUpload={
+              IMAGE_TOOLS_ENABLED
+                ? () => {
+                    void openImageAttachSheet(null, card.originalInput ?? null);
+                  }
+                : undefined
+            }
           />
         </div>
       )}
 
-      <ImageAttachSheet
-        open={isImageAttachOpen}
-        loading={imageAttachLoading}
-        error={imageAttachError}
-        response={imageAttachResponse}
-        contextHint={imageAttachContextHint}
-        onClose={closeImageAttachSheet}
-        onBrowse={() => {
-          void browseForImage();
-        }}
-        onSelectCandidate={(candidate, options) => {
-          void applyCandidateImage(candidate, options);
-        }}
-      />
+      {IMAGE_TOOLS_ENABLED && (
+        <ImageAttachSheet
+          open={isImageAttachOpen}
+          loading={imageAttachLoading}
+          error={imageAttachError}
+          response={imageAttachResponse}
+          contextHint={imageAttachContextHint}
+          onClose={closeImageAttachSheet}
+          onBrowse={() => {
+            void browseForImage();
+          }}
+          onSelectCandidate={(candidate, options) => {
+            void applyCandidateImage(candidate, options);
+          }}
+        />
+      )}
 
       {highlights.length > 0 && (
         <div className="life-card-bubble__highlights">

@@ -22,10 +22,8 @@ export function LifeStreamHeaderControls() {
     resetDayThreadAndRebuildForCurrentDate,
     authHealthStatus,
     checkAuthHealth,
-    imageAutoFetchStatus,
     codexUsageGuard,
     resetCodexUsageGuardBaseline,
-    autoFetchImagesForCurrentDate,
     activeFilters,
     toggleFilter,
     clearFilters,
@@ -116,28 +114,6 @@ export function LifeStreamHeaderControls() {
                   ? "🩺 Auth: login needed"
                   : "🩺 Auth check"}
           </button>
-          <button
-            type="button"
-            className="life-segment-button life-stream-semantic-actions__button"
-            onClick={() => {
-              void autoFetchImagesForCurrentDate("review_first");
-            }}
-            disabled={imageAutoFetchStatus.state === "running"}
-          >
-            {imageAutoFetchStatus.state === "running"
-              ? "🖼️ Fetching..."
-              : "🖼️ Fetch images (ask)"}
-          </button>
-          <button
-            type="button"
-            className="life-segment-button life-stream-semantic-actions__button"
-            onClick={() => {
-              void autoFetchImagesForCurrentDate("auto_apply");
-            }}
-            disabled={imageAutoFetchStatus.state === "running"}
-          >
-            ⚡ Auto-apply images
-          </button>
         </div>
         {semanticRegenerationStatus.message && (
           <span
@@ -170,16 +146,6 @@ export function LifeStreamHeaderControls() {
             role="status"
           >
             {authHealthStatus.message}
-          </span>
-        )}
-        {imageAutoFetchStatus.message && (
-          <span
-            className={`life-stream-semantic-actions__status life-stream-semantic-actions__status--image${
-              imageAutoFetchStatus.state === "error" ? " is-error" : ""
-            }`}
-            role="status"
-          >
-            {imageAutoFetchStatus.message}
           </span>
         )}
         <div

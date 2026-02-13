@@ -745,25 +745,27 @@ function NodeCard({
             <span className="life-causal-card__node-image-placeholder-icon" aria-hidden="true">
               🖼️
             </span>
-            <span className="life-causal-card__node-image-placeholder-title">
-              Add statement image
-            </span>
-            <span className="life-causal-card__node-image-placeholder-copy">
-              Keep this card visually anchored even while images are pending.
-            </span>
-            {onRequestNodeImage && (
-              <button
-                type="button"
-                className="life-causal-card__node-image-action"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onRequestNodeImage(node.id);
-                }}
-                data-no-toggle
-              >
-                📷 Set image
-              </button>
-            )}
+            {onRequestNodeImage ? (
+              <>
+                <span className="life-causal-card__node-image-placeholder-title">
+                  Add statement image
+                </span>
+                <span className="life-causal-card__node-image-placeholder-copy">
+                  Keep this card visually anchored even while images are pending.
+                </span>
+                <button
+                  type="button"
+                  className="life-causal-card__node-image-action"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRequestNodeImage(node.id);
+                  }}
+                  data-no-toggle
+                >
+                  📷 Set image
+                </button>
+              </>
+            ) : null}
           </div>
         )
       ) : (
@@ -819,41 +821,37 @@ function NodeCard({
         </ul>
       )}
 
-      {shouldShowImageStatus && image?.status === "missing" && (
+      {onRequestNodeImage && shouldShowImageStatus && image?.status === "missing" && (
         <div className="life-causal-card__node-status">
           Missing image
-          {onRequestNodeImage && (
-            <button
-              type="button"
-              className="life-causal-card__node-image-action"
-              onClick={(event) => {
-                event.stopPropagation();
-                onRequestNodeImage(node.id);
-              }}
-              data-no-toggle
-            >
-              📷 Set image
-            </button>
-          )}
+          <button
+            type="button"
+            className="life-causal-card__node-image-action"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRequestNodeImage(node.id);
+            }}
+            data-no-toggle
+          >
+            📷 Set image
+          </button>
         </div>
       )}
 
-      {shouldShowImageStatus && image?.status === "upload_prompt" && (
+      {onRequestNodeImage && shouldShowImageStatus && image?.status === "upload_prompt" && (
         <div className="life-causal-card__node-status">
           Add image later
-          {onRequestNodeImage && (
-            <button
-              type="button"
-              className="life-causal-card__node-image-action"
-              onClick={(event) => {
-                event.stopPropagation();
-                onRequestNodeImage(node.id);
-              }}
-              data-no-toggle
-            >
-              📷 Set image
-            </button>
-          )}
+          <button
+            type="button"
+            className="life-causal-card__node-image-action"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRequestNodeImage(node.id);
+            }}
+            data-no-toggle
+          >
+            📷 Set image
+          </button>
         </div>
       )}
 
