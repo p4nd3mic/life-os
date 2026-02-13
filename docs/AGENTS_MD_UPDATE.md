@@ -6,6 +6,18 @@ This file is intended to be pasted into `~/.codex/AGENTS.md` as a quick-referenc
 
 ---
 
+## Shared CODEX_HOME policy (2026-02)
+
+Use this policy text in `~/.codex/AGENTS.md` so Official Codex and Life OS CodexMonitor stay aligned:
+
+- **Shared CODEX_HOME (source of truth):** `/Users/jmwillis/.codex`
+- **Legacy backup only (retired):** `/Users/jmwillis/.codex-lifeos`
+- Life workspace override should point to the shared root in:
+  - `/Users/jmwillis/Library/Application Support/com.dimillian.codexmonitor/workspaces.json`
+- Automations are intentionally paused while single-root behavior is stabilized.
+
+---
+
 ## Life OS architecture quick reference
 
 ```

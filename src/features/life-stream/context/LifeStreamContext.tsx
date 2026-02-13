@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { subscribeAppServerEvents } from "../../../services/events";
 import { useLifeStream } from "../hooks/useLifeStream";
 import { taskDockStore } from "../state/taskDockStore";
 import type {
@@ -30,6 +31,30 @@ import type {
 } from "../types";
 
 const FILTER_STORAGE_KEY = "life-stream-filters";
+const CODEX_USAGE_SHORT_WINDOW_MS = 60_000;
+const CODEX_USAGE_LONG_WINDOW_MS = 5 * 60_000;
+const CODEX_USAGE_SURGE_TURNS_PER_MIN = 6;
+const CODEX_USAGE_SURGE_TOKENS_PER_MIN = 120_000;
+
+type CodexUsageGuardTrend = "idle" | "active" | "surging";
+
+type CodexUsageGuardSnapshot = {
+  turnsLastMinute: number;
+  turnsLastFiveMinutes: number;
+  tokensLastMinute: number;
+  tokensLastFiveMinutes: number;
+  inFlightTurns: number;
+  lastTurnAt?: string;
+  lastTokenAt?: string;
+  primaryUsedPercent?: number;
+  primaryRemainingPercent?: number;
+  primaryResetsAt?: number | null;
+  secondaryUsedPercent?: number;
+  secondaryRemainingPercent?: number;
+  secondaryResetsAt?: number | null;
+  trend: CodexUsageGuardTrend;
+  message?: string;
+};
 
 type LifeStreamContextValue = {
   cards: StreamCard[];
@@ -101,6 +126,8 @@ type LifeStreamContextValue = {
     state: "idle" | "running" | "done" | "error";
     message?: string;
   };
+  codexUsageGuard: CodexUsageGuardSnapshot;
+  resetCodexUsageGuardBaseline: () => void;
   autoFetchImagesForCurrentDate: (
     mode?: ImageAutoFetchMode,
   ) => Promise<ImageAutoFetchSummary | null>;
@@ -195,11 +222,29 @@ export function LifeStreamProvider({
     state: "idle" | "running" | "done" | "error";
     message?: string;
   }>({ state: "idle" });
+  const [codexUsageGuard, setCodexUsageGuard] = useState<CodexUsageGuardSnapshot>({
+    turnsLastMinute: 0,
+    turnsLastFiveMinutes: 0,
+    tokensLastMinute: 0,
+    tokensLastFiveMinutes: 0,
+    inFlightTurns: 0,
+    trend: "idle",
+  });
   const semanticStatusTimerRef = useRef<number | null>(null);
   const imageAutoFetchStatusTimerRef = useRef<number | null>(null);
   const authHealthRetryTimerRef = useRef<number | null>(null);
   const authHealthRetryAttemptsRef = useRef(0);
   const authHealthInFlightRef = useRef(false);
+  const codexUsageTurnSamplesRef = useRef<number[]>([]);
+  const codexUsageTokenSamplesRef = useRef<Array<{ at: number; tokens: number }>>([]);
+  const codexUsageInFlightTurnsRef = useRef<Set<string>>(new Set());
+  const codexUsageLastThreadTotalsRef = useRef<Map<string, number>>(new Map());
+  const codexUsageRateLimitRef = useRef<{
+    primaryUsedPercent?: number;
+    primaryResetsAt?: number | null;
+    secondaryUsedPercent?: number;
+    secondaryResetsAt?: number | null;
+  }>({});
 
   const persistFilters = useCallback((next: Set<DomainId>) => {
     setActiveFilters(next);
@@ -236,6 +281,241 @@ export function LifeStreamProvider({
     activeFilters.size === 0
       ? cards
       : cards.filter((card) => activeFilters.has(card.domain));
+
+  const recomputeCodexUsageGuard = useCallback(() => {
+    const now = Date.now();
+    const cutoffShort = now - CODEX_USAGE_SHORT_WINDOW_MS;
+    const cutoffLong = now - CODEX_USAGE_LONG_WINDOW_MS;
+
+    codexUsageTurnSamplesRef.current = codexUsageTurnSamplesRef.current.filter(
+      (timestamp) => timestamp >= cutoffLong,
+    );
+    codexUsageTokenSamplesRef.current = codexUsageTokenSamplesRef.current.filter(
+      (sample) => sample.at >= cutoffLong,
+    );
+
+    const turnsLastMinute = codexUsageTurnSamplesRef.current.filter(
+      (timestamp) => timestamp >= cutoffShort,
+    ).length;
+    const turnsLastFiveMinutes = codexUsageTurnSamplesRef.current.length;
+    const tokensLastMinute = codexUsageTokenSamplesRef.current.reduce(
+      (sum, sample) => (sample.at >= cutoffShort ? sum + sample.tokens : sum),
+      0,
+    );
+    const tokensLastFiveMinutes = codexUsageTokenSamplesRef.current.reduce(
+      (sum, sample) => sum + sample.tokens,
+      0,
+    );
+    const inFlightTurns = codexUsageInFlightTurnsRef.current.size;
+    const lastTurnAt = codexUsageTurnSamplesRef.current.length
+      ? new Date(
+          codexUsageTurnSamplesRef.current[codexUsageTurnSamplesRef.current.length - 1],
+        ).toISOString()
+      : undefined;
+    const lastTokenAt = codexUsageTokenSamplesRef.current.length
+      ? new Date(
+          codexUsageTokenSamplesRef.current[codexUsageTokenSamplesRef.current.length - 1]?.at,
+        ).toISOString()
+      : undefined;
+    const primaryUsedPercent = normalizePercent(
+      codexUsageRateLimitRef.current.primaryUsedPercent,
+    );
+    const secondaryUsedPercent = normalizePercent(
+      codexUsageRateLimitRef.current.secondaryUsedPercent,
+    );
+    const primaryRemainingPercent =
+      typeof primaryUsedPercent === "number" ? clampPercent(100 - primaryUsedPercent) : undefined;
+    const secondaryRemainingPercent =
+      typeof secondaryUsedPercent === "number"
+        ? clampPercent(100 - secondaryUsedPercent)
+        : undefined;
+
+    const trend: CodexUsageGuardTrend =
+      turnsLastMinute >= CODEX_USAGE_SURGE_TURNS_PER_MIN ||
+      tokensLastMinute >= CODEX_USAGE_SURGE_TOKENS_PER_MIN ||
+      inFlightTurns >= 3
+        ? "surging"
+        : turnsLastMinute > 0 || tokensLastMinute > 0 || inFlightTurns > 0
+          ? "active"
+          : "idle";
+
+    const message =
+      trend === "surging"
+        ? `🔴 Surge detected: ${turnsLastMinute} turns/min · ${formatCompact(tokensLastMinute)} tokens/min`
+        : trend === "active"
+          ? `🟡 Active: ${turnsLastMinute} turns/min · ${formatCompact(tokensLastMinute)} tokens/min`
+          : "🟢 Idle";
+
+    setCodexUsageGuard({
+      turnsLastMinute,
+      turnsLastFiveMinutes,
+      tokensLastMinute,
+      tokensLastFiveMinutes,
+      inFlightTurns,
+      lastTurnAt,
+      lastTokenAt,
+      primaryUsedPercent,
+      primaryRemainingPercent,
+      primaryResetsAt: codexUsageRateLimitRef.current.primaryResetsAt,
+      secondaryUsedPercent,
+      secondaryRemainingPercent,
+      secondaryResetsAt: codexUsageRateLimitRef.current.secondaryResetsAt,
+      trend,
+      message,
+    });
+  }, []);
+
+  const resetCodexUsageGuardBaseline = useCallback(() => {
+    codexUsageTurnSamplesRef.current = [];
+    codexUsageTokenSamplesRef.current = [];
+    codexUsageInFlightTurnsRef.current.clear();
+    codexUsageLastThreadTotalsRef.current.clear();
+    recomputeCodexUsageGuard();
+  }, [recomputeCodexUsageGuard]);
+
+  useEffect(() => {
+    if (!workspaceId) {
+      codexUsageTurnSamplesRef.current = [];
+      codexUsageTokenSamplesRef.current = [];
+      codexUsageInFlightTurnsRef.current.clear();
+      codexUsageLastThreadTotalsRef.current.clear();
+      codexUsageRateLimitRef.current = {};
+      setCodexUsageGuard({
+        turnsLastMinute: 0,
+        turnsLastFiveMinutes: 0,
+        tokensLastMinute: 0,
+        tokensLastFiveMinutes: 0,
+        inFlightTurns: 0,
+        trend: "idle",
+      });
+      return;
+    }
+
+    codexUsageTurnSamplesRef.current = [];
+    codexUsageTokenSamplesRef.current = [];
+    codexUsageInFlightTurnsRef.current.clear();
+    codexUsageLastThreadTotalsRef.current.clear();
+    codexUsageRateLimitRef.current = {};
+    setCodexUsageGuard({
+      turnsLastMinute: 0,
+      turnsLastFiveMinutes: 0,
+      tokensLastMinute: 0,
+      tokensLastFiveMinutes: 0,
+      inFlightTurns: 0,
+      trend: "idle",
+    });
+
+    const recompute = () => {
+      recomputeCodexUsageGuard();
+    };
+
+    const unlisten = subscribeAppServerEvents((event) => {
+      if (event.workspace_id !== workspaceId) {
+        return;
+      }
+      const method = String(event.message?.method ?? "");
+      const params = (event.message?.params ?? {}) as Record<string, unknown>;
+      const now = Date.now();
+
+      if (method === "turn/started") {
+        const turnId = String(
+          ((params.turn as Record<string, unknown> | undefined)?.id ??
+            params.turnId ??
+            params.turn_id) ??
+            "",
+        );
+        const threadId = String(
+          params.threadId ??
+            params.thread_id ??
+            (params.turn as Record<string, unknown> | undefined)?.threadId ??
+            (params.turn as Record<string, unknown> | undefined)?.thread_id ??
+            "",
+        );
+        codexUsageTurnSamplesRef.current.push(now);
+        if (turnId && threadId) {
+          codexUsageInFlightTurnsRef.current.add(`${threadId}:${turnId}`);
+        } else if (threadId) {
+          codexUsageInFlightTurnsRef.current.add(threadId);
+        }
+        recompute();
+        return;
+      }
+
+      if (method === "turn/completed" || method === "turn/error") {
+        const turnId = String(
+          ((params.turn as Record<string, unknown> | undefined)?.id ??
+            params.turnId ??
+            params.turn_id) ??
+            "",
+        );
+        const threadId = String(
+          params.threadId ??
+            params.thread_id ??
+            (params.turn as Record<string, unknown> | undefined)?.threadId ??
+            (params.turn as Record<string, unknown> | undefined)?.thread_id ??
+            "",
+        );
+        if (turnId && threadId) {
+          codexUsageInFlightTurnsRef.current.delete(`${threadId}:${turnId}`);
+          codexUsageInFlightTurnsRef.current.delete(threadId);
+        } else if (threadId) {
+          codexUsageInFlightTurnsRef.current.delete(threadId);
+        }
+        recompute();
+        return;
+      }
+
+      if (method === "thread/tokenUsage/updated") {
+        const threadId = String(params.threadId ?? params.thread_id ?? "");
+        const tokenUsage = ((params.tokenUsage ??
+          params.token_usage) as Record<string, unknown> | undefined) ?? {};
+        if (threadId) {
+          const total = readUsageTotalTokens(tokenUsage);
+          if (typeof total === "number") {
+            const previous = codexUsageLastThreadTotalsRef.current.get(threadId);
+            if (typeof previous === "number") {
+              const delta = Math.max(0, total - previous);
+              if (delta > 0) {
+                codexUsageTokenSamplesRef.current.push({ at: now, tokens: delta });
+              }
+            }
+            codexUsageLastThreadTotalsRef.current.set(threadId, total);
+          } else {
+            const fallbackDelta = readUsageLastTokens(tokenUsage);
+            if (fallbackDelta > 0) {
+              codexUsageTokenSamplesRef.current.push({ at: now, tokens: fallbackDelta });
+            }
+          }
+        }
+        recompute();
+        return;
+      }
+
+      if (method === "account/rateLimits/updated") {
+        const limits =
+          ((params.rateLimits ?? params.rate_limits) as Record<string, unknown> | undefined) ??
+          {};
+        codexUsageRateLimitRef.current = {
+          primaryUsedPercent: readRateLimitUsedPercent(limits.primary),
+          primaryResetsAt: readRateLimitResetTs(limits.primary),
+          secondaryUsedPercent: readRateLimitUsedPercent(limits.secondary),
+          secondaryResetsAt: readRateLimitResetTs(limits.secondary),
+        };
+        recompute();
+      }
+    });
+
+    const interval = window.setInterval(() => {
+      recompute();
+    }, 1_000);
+
+    recompute();
+
+    return () => {
+      unlisten();
+      window.clearInterval(interval);
+    };
+  }, [recomputeCodexUsageGuard, workspaceId]);
 
   const clearSemanticRegenerationStatus = useCallback(() => {
     setSemanticRegenerationStatus({ state: "idle" });
@@ -749,6 +1029,8 @@ export function LifeStreamProvider({
     authHealthStatus,
     checkAuthHealth,
     imageAutoFetchStatus,
+    codexUsageGuard,
+    resetCodexUsageGuardBaseline,
     autoFetchImagesForCurrentDate,
     clearImageAutoFetchStatus,
     getImageCandidates,
@@ -777,6 +1059,76 @@ function isSemanticAuthError(value: string): boolean {
     normalized.includes("authentication in header") ||
     (normalized.includes("401") && normalized.includes("api.openai.com"))
   );
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function normalizePercent(value: unknown): number | undefined {
+  const parsed = asNumber(value);
+  if (parsed === null) {
+    return undefined;
+  }
+  return clampPercent(parsed);
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function formatCompact(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function readUsageTotalTokens(raw: Record<string, unknown>): number | null {
+  const total = (raw.total as Record<string, unknown> | undefined) ?? {};
+  const direct = asNumber(total.totalTokens ?? total.total_tokens);
+  if (direct !== null) {
+    return direct;
+  }
+  return asNumber(raw.totalTokens ?? raw.total_tokens);
+}
+
+function readUsageLastTokens(raw: Record<string, unknown>): number {
+  const last = (raw.last as Record<string, unknown> | undefined) ?? {};
+  const fromLast = asNumber(last.totalTokens ?? last.total_tokens);
+  if (fromLast !== null && fromLast >= 0) {
+    return fromLast;
+  }
+  return 0;
+}
+
+function readRateLimitUsedPercent(raw: unknown): number | undefined {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  return normalizePercent(record.usedPercent ?? record.used_percent);
+}
+
+function readRateLimitResetTs(raw: unknown): number | null | undefined {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const parsed = asNumber(record.resetsAt ?? record.resets_at);
+  if (parsed === null) {
+    return undefined;
+  }
+  return parsed > 10_000_000_000 ? parsed : parsed * 1_000;
 }
 
 const IMAGE_CAPABLE_TYPES = new Set([
