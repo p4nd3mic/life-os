@@ -197,8 +197,6 @@ export function LifeStreamProvider({
   }>({ state: "idle" });
   const semanticStatusTimerRef = useRef<number | null>(null);
   const imageAutoFetchStatusTimerRef = useRef<number | null>(null);
-  const authHealthRetryTimerRef = useRef<number | null>(null);
-  const authHealthRetryAttemptsRef = useRef(0);
   const authHealthInFlightRef = useRef(false);
 
   const persistFilters = useCallback((next: Set<DomainId>) => {
@@ -255,13 +253,6 @@ export function LifeStreamProvider({
     }, delayMs);
   }, []);
 
-  const clearAuthHealthRetryTimer = useCallback(() => {
-    if (authHealthRetryTimerRef.current) {
-      window.clearTimeout(authHealthRetryTimerRef.current);
-      authHealthRetryTimerRef.current = null;
-    }
-  }, []);
-
   useEffect(() => {
     return () => {
       if (semanticStatusTimerRef.current) {
@@ -271,10 +262,6 @@ export function LifeStreamProvider({
       if (imageAutoFetchStatusTimerRef.current) {
         window.clearTimeout(imageAutoFetchStatusTimerRef.current);
         imageAutoFetchStatusTimerRef.current = null;
-      }
-      if (authHealthRetryTimerRef.current) {
-        window.clearTimeout(authHealthRetryTimerRef.current);
-        authHealthRetryTimerRef.current = null;
       }
     };
   }, []);
@@ -491,61 +478,8 @@ export function LifeStreamProvider({
   }, [getAuthHealth, workspaceId]);
 
   useEffect(() => {
-    if (!workspaceId) {
-      setAuthHealthStatus({ state: "idle" });
-      authHealthRetryAttemptsRef.current = 0;
-      clearAuthHealthRetryTimer();
-      return;
-    }
-    authHealthRetryAttemptsRef.current = 0;
-    clearAuthHealthRetryTimer();
-    void checkAuthHealth();
-  }, [checkAuthHealth, clearAuthHealthRetryTimer, workspaceId]);
-
-  useEffect(() => {
-    if (!workspaceId) return;
-
-    const message = authHealthStatus.message?.toLowerCase() ?? "";
-    const waitingForSession =
-      authHealthStatus.state === "unknown" &&
-      (message.includes("workspace session unavailable") ||
-        message.includes("session unavailable"));
-
-    if (waitingForSession) {
-      if (authHealthRetryAttemptsRef.current >= 10) {
-        clearAuthHealthRetryTimer();
-        return;
-      }
-
-      clearAuthHealthRetryTimer();
-      const delayMs = Math.min(
-        1600 + authHealthRetryAttemptsRef.current * 500,
-        5200,
-      );
-      authHealthRetryTimerRef.current = window.setTimeout(() => {
-        authHealthRetryTimerRef.current = null;
-        authHealthRetryAttemptsRef.current += 1;
-        void checkAuthHealth();
-      }, delayMs);
-      return;
-    }
-
-    if (
-      authHealthStatus.state === "healthy" ||
-      authHealthStatus.state === "unauthorized" ||
-      authHealthStatus.state === "error" ||
-      (authHealthStatus.state === "unknown" && !message.includes("session unavailable"))
-    ) {
-      clearAuthHealthRetryTimer();
-      authHealthRetryAttemptsRef.current = 0;
-    }
-  }, [
-    authHealthStatus.message,
-    authHealthStatus.state,
-    checkAuthHealth,
-    clearAuthHealthRetryTimer,
-    workspaceId,
-  ]);
+    setAuthHealthStatus({ state: "idle" });
+  }, [workspaceId]);
 
   const clearImageAutoFetchStatus = useCallback(() => {
     setImageAutoFetchStatus({ state: "idle" });
